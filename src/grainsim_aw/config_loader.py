@@ -12,7 +12,7 @@ def load_cfg(
     # 基本结构校验
     for sec in ("domain", "time", "run"):
         assert sec in data and isinstance(data[sec], dict), f"缺少配置节 [{sec}]"
-    
+
     d, t, r = data["domain"], data["time"], data["run"]
 
     # 最小校验 + 安全默认
