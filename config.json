@@ -1,0 +1,22 @@
+{
+    "domain": {
+        "nx": 64,
+        "ny": 64,
+        "dx": 1e-6,
+        "dy": 1e-6,
+        "nghost": 3,
+        "bc": "neumann0"
+    },
+    "time": {
+        "dt": 1e-3,
+        "t_end": 1e-2,
+        "save_every": 5
+    },
+    "run": {
+        "seed": 42,
+        "output_dir": "data/output/run-minimal"
+    },
+    "temperature": {
+        "T_const": 1750.0
+    }
+}
