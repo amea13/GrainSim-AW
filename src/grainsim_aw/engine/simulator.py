@@ -1,7 +1,8 @@
 import numpy as np
 from ..core.grid import create_grid, update_ghosts, classify_phases
 from ..io.writer import prepare_out, write_meta, snapshot
-from ..temperature.adapter import sample as sample_temperature
+from ..multiphysics.temperature_adapter import sample as sample_temperature
+
 
 class Simulator:
     def __init__(self, cfg: dict):
@@ -25,7 +26,9 @@ class Simulator:
 
             # Pre-step
             update_ghosts(self.grid, self.cfg["domain"]["bc"])
-            Tbuf  = sample_temperature(self.grid, t, self.cfg.get("temperature", {"T_const": 1750.0}))
+            Tbuf = sample_temperature(
+                self.grid, t, self.cfg.get("temperature", {"T_const": 1750.0})
+            )
             masks = classify_phases(self.grid.fs, self.grid.nghost)
 
             # Core physics （第一批为空实现，留出接口）
