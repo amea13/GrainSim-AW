@@ -7,9 +7,13 @@
         "nghost": 3,
         "bc": "neumann0"
     },
+    "physics": {
+        "mdcs": {},
+        "orientation": {}
+    },
     "time": {
         "dt": 1e-3,
-        "t_end": 1e-2,
+        "t_end": 3e-3,
         "save_every": 5
     },
     "run": {
