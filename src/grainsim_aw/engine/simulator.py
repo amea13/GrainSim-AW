@@ -89,6 +89,8 @@ class Simulator:
             )
             logger.info("Interface fields computed (stub)")
 
+            fs_old = self.grid.fs.copy()
+
             mdcs_step(
                 self.grid,
                 fields,
@@ -99,11 +101,14 @@ class Simulator:
             )
             logger.info("MDCS done (stub)")
 
+            fs_dot = (self.grid.fs - fs_old) / dt
+
             solute_advance(
                 self.grid,
                 self.cfg.get("physics", {}).get("solute", {}),
                 dt,
                 masks,
+                fs_dot=fs_dot,
             )
             logger.info("solute_advance done (stub)")
 

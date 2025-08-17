@@ -32,7 +32,7 @@
     "time": {
         "dt": 1e-3,
         "t_end": 1e-2,
-        "save_every": 5
+        "save_every": 100
     },
     "run": {
         "seed": 42,
@@ -57,8 +57,8 @@
             "CL"
         ],
         "every": 10,
-        "max_fps": 5,
-        "block_on_finish": true,
+        "max_fps": 5,         
+        "block_on_finish": true,   
         "save_frames": false,
         "with_colorbar": false
     }
