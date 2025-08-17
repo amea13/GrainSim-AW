@@ -8,12 +8,30 @@
     "bc": "neumann0"
   },
   "physics": {
-    "mdcs": {},
-    "orientation": {}
+    "interface": {
+      "Vn_const": 0.05
+    },
+    "orientation": {
+      "fold": 4,
+      "N_theta": 48
+    },
+    "mdcs": {
+      "gf_over_ln": 1.0,
+      "fs_capture_threshold": 0.6,
+      "capture_seed_fs": 0.005
+    },
+    "solute": {}
+  },
+  "nucleation": {
+    "dT_threshold": 5.0,
+    "prob_per_cell": 0,
+    "seed_fs": 0.001,
+    "fold": 4,
+    "N_theta": 48
   },
   "time": {
     "dt": 0.001,
-    "t_end": 0.003,
+    "t_end": 0.01,
     "save_every": 5
   },
   "run": {
@@ -21,6 +39,23 @@
     "output_dir": "data/output/run-minimal"
   },
   "temperature": {
-    "T_const": 1750.0
+    "mode": "constant_cooling",
+    "T0": 950.0,
+    "cooling_rate": 1.0
+  },
+  "init": {
+    "mode": "single_center",
+    "theta_deg": 0,
+    "seed_fs": 0.01
+  },
+  "viz": {
+    "live": {
+      "enabled": true,
+      "field": "grain_id",
+      "every": 1,
+      "autoscale": false,
+      "show_ghosts": false,
+      "keep_open": true
+    }
   }
 }

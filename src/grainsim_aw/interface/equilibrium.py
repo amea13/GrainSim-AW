@@ -26,26 +26,35 @@ class IfaceFields:
 
 def compute_interface_fields(
     grid,
-    Tbuf: np.ndarray,
     cfg_if: Dict[str, Any],
     cfg_orient: Dict[str, Any],
     masks: Dict[str, np.ndarray],
-) -> IfaceFields:
+):
     """
-    生成界面派生量（占位版：全 0）；约定所有数组形状与 grid.fs 完全一致（含 ghost）。
-    非界面位置值为 0；真实实现时只在 masks['mask_int'] 上计算。
+    占位加强版：在界面元胞上给一个常数 Vn，其它派生量先置零/一。
+    如需温度信息请直接使用 grid.T。
     """
     shape = grid.fs.shape
     zeros = lambda: np.zeros(shape, dtype=float)
 
-    fields = IfaceFields(
-        Vn=zeros(),
-        nx=zeros(),
-        ny=zeros(),
-        kappa=zeros(),
-        ani=zeros(),
-        CLs=zeros(),
-        CSs=zeros(),
+    # 占位派生量
+    Vn = zeros()
+    ani = np.ones(shape, dtype=float)  # 暂时各向同性
+    nx = zeros()
+    ny = zeros()
+    kappa = zeros()
+    CLs = zeros()
+    CSs = zeros()
+
+    # 示例：如将来有温度依赖，可直接读取
+    # T = grid.T
+
+    vconst = float(cfg_if.get("Vn_const", 0.0))
+    if "mask_int" in masks and vconst > 0.0:
+        Vn[masks["mask_int"]] = vconst
+
+    fields = IfaceFields(Vn=Vn, nx=nx, ny=ny, kappa=kappa, ani=ani, CLs=CLs, CSs=CSs)
+    logger.info(
+        "Interface fields: Vn_const=%.3g, active=%d", vconst, int(np.count_nonzero(Vn))
     )
-    logger.info("[interface] compute_interface_fields() 占位版返回全 0 字段。")
     return fields

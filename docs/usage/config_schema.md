@@ -1,4 +1,4 @@
-# 配置键表与校验规则（config\_schema）—— v0.1（2025-08-14）
+# 配置键表与校验规则（config\_schema）—— v0.2（2025-08-17）
 
 本文件定义可读写配置的键、类型、默认值与校验规则。目标是让配置成为可验证的外部契约。
 
@@ -30,7 +30,7 @@
 | bc         | str   | "neumann0" | 边界条件。可选 "neumann0"、"dirichlet"、"periodic"。也可用分向量写法见下 |
 | bc\_x      | str   | 继承 bc      | 若提供则覆盖 x 方向边界类型                                      |
 | bc\_y      | str   | 继承 bc      | 若提供则覆盖 y 方向边界类型                                      |
-| bc\_values | table | 无          | 当使用 dirichlet 时需给出 fs, CL, CS 的边界值表                  |
+| bc\_values | table | 无          | 当使用 dirichlet 时需给出 fs, CL, CS, T 的边界值表               |
 
 示例：
 
@@ -39,6 +39,7 @@
 fs = 0.0
 CL = 0.02
 CS = 0.02
+T = 1800.0
 ```
 
 ## 3. \[time]
@@ -52,21 +53,21 @@ CS = 0.02
 
 ## 4. \[run]
 
-| 键                | 类型          | 默认                                                    | 约束与说明                               |
-| ---------------- | ----------- | ----------------------------------------------------- | ----------------------------------- |
-| seed             | int         | 0                                                     | 任意整数。作为统一随机源种子                      |
-| output\_dir      | str         | "data/output/run"                                     | 可写目录。若存在会追加时间戳子目录                   |
-| snapshot\_format | str         | "npz"                                                 | 可选 "npz"、"hdf5"、"zarr"              |
-| snapshot\_fields | array\[str] | \["fs","CL","CS","grain\_id","theta","L\_dia","lock"] | 写入的持久字段清单                           |
-| log\_level       | str         | "INFO"                                                | 可选 "DEBUG"、"INFO"、"WARNING"、"ERROR" |
+| 键                | 类型          | 默认                                                        | 约束与说明                               |
+| ---------------- | ----------- | --------------------------------------------------------- | ----------------------------------- |
+| seed             | int         | 0                                                         | 任意整数。作为统一随机源种子                      |
+| output\_dir      | str         | "data/output/run"                                         | 可写目录。若存在会追加时间戳子目录                   |
+| snapshot\_format | str         | "npz"                                                     | 可选 "npz"、"hdf5"、"zarr"              |
+| snapshot\_fields | array\[str] | \["fs","CL","CS","grain\_id","theta","L\_dia","lock","T"] | 写入的持久字段清单                           |
+| log\_level       | str         | "INFO"                                                    | 可选 "DEBUG"、"INFO"、"WARNING"、"ERROR" |
 
 ## 5. \[physics]
 
 ### 5.1 通用
 
-| 键                    | 类型   | 默认     | 约束与说明                              |
-| -------------------- | ---- | ------ | ---------------------------------- |
-| unit\_of\_C          | str  | "mass" | 可选 "mass" 或 "atomic"，统一 CL 与 CS 单位 |
+| 键           | 类型  | 默认     | 约束与说明                              |
+| ----------- | --- | ------ | ---------------------------------- |
+| unit\_of\_C | str | "mass" | 可选 "mass" 或 "atomic"，统一 CL 与 CS 单位 |
 
 ### 5.2 取向与各向异性 \[physics.orientation]
 
@@ -90,9 +91,9 @@ CS = 0.02
 
 ### 5.4 生长规则 MDCS \[physics.mdcs]
 
-| 键                      | 类型    | 默认  | 约束与说明                      |
-| ---------------------- | ----- | --- | -------------------------- |
-| kernel\_radius\_dx     | int   | 3   | 圆核半径，单位为格点数。典型为 3 对应直径 7Δx |
+| 键                  | 类型  | 默认 | 约束与说明                      |
+| ------------------ | --- | -- | -------------------------- |
+| kernel\_radius\_dx | int | 3  | 圆核半径，单位为格点数。典型为 3 对应直径 7Δx |
 
 ### 5.5 溶质场 \[physics.solute]
 
@@ -182,6 +183,7 @@ save_every = 20
 seed = 42
 output_dir = "data/output/run-minimal"
 snapshot_format = "npz"
+snapshot_fields = ["fs","CL","CS","grain_id","theta","L_dia","lock","T"]
 
 [physics]
 unit_of_C = "mass"
@@ -234,7 +236,7 @@ checkpoint_every = 200
 seed = 2025
 output_dir = "data/output/run-adv"
 snapshot_format = "hdf5"
-snapshot_fields = ["fs","CL","CS","grain_id","theta","L_dia","lock"]
+snapshot_fields = ["fs","CL","CS","grain_id","theta","L_dia","lock","T"]
 log_level = "DEBUG"
 
 [physics]

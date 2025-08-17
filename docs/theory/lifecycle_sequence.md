@@ -1,4 +1,4 @@
-# 时间推进序列（Lifecycle） — v0.1（2025-08-14）
+# 时间推进序列（Lifecycle） — v0.2（2025-08-17）
 
 > 本页是**流程契约**：定义一次时间步里“先做什么、谁能改什么、何时写文件”。它面向人阅读与实现对照，非可执行代码。
 
@@ -11,8 +11,8 @@
 ## 2. 参与者（角色）
 
 * **Engine（引擎/调度）**：时间循环、ghost 同步、日志、快照与检查点。
-* **TemperatureAdapter（温度适配器）**：按 (x,y,t) 提供温度 *T*（派生量，不入快照）。
-* **Nucleation（形核）**：基于欠冷的 Thévoz 统计，决定新核（写 `grain_id, theta(/theta_class)`）。
+* **TemperatureAdapter（温度适配器）**：按 (x,y,t) 提供温度 *T*。⚠️ 自 v0.2 起，*T* 被提升为持久字段，进入快照与重启。
+* **Nucleation（形核）**：基于过冷的 Thévoz 统计，决定新核（写 `grain_id, theta(/theta_class)`）。
 * **Interface（界面平衡）**：计算界面处 `C_L^*, C_S^*`、各向异性因子、曲率等（派生量）。
 * **GrowthRule/MDCS（几何生长）**：由 `V_n` 与法向更新 `Δfs, L_dia`，捕获新胞（写 `fs, L_dia`）。
 * **SoluteSolver（溶质守恒）**：体积分数加权 + 成对源/汇项，更新 `CL, CS`。
@@ -21,14 +21,14 @@
 ## 3. 状态分层（只读/持久/临时）
 
 * **Config（只读）**：来自配置文件的常量与开关（例：`dt, k, D_L, fold, N_theta`）。
-* **Grid（持久）**：`fs, CL, CS, grain_id, theta, L_dia, (lock/state)`，含 ghost 层；快照/重启所需。
-* **Derived（派生量，临时）**：`T, ΔT, nx, ny, kappa, ani, V_n, C_L^*, C_S^* ...`，当步生成，用完丢弃。
+* **Grid（持久）**：`fs, CL, CS, grain_id, theta, L_dia, (lock/state), T`，含 ghost 层；快照/重启所需。
+* **Derived（派生量，临时）**：`ΔT, nx, ny, kappa, ani, V_n, C_L^*, C_S^* ...`，当步生成，用完丢弃。
 * **Workspace（模块工作区）**：系数矩阵、残差、MDCS 局部几何、前沿列表等，仅模块内部复用。
 * **External data**：外部温度文件等；配置只给路径与插值方式。
 
 ## 4. 不变量与约束（每步在 core 上检查）
 
-* 值域：`0 ≤ fs ≤ 1`；`CL, CS` 为有限数（非 NaN/Inf）。
+* 值域：`0 ≤ fs ≤ 1`；`CL, CS, T` 为有限数（非 NaN/Inf）。
 * 守恒：零通量边界下，总溶质量变化 `|ΔM| ≤ tol`（阈值 `tol` 来自配置）。
 * 取向：`theta` 规范到 `[0, 2π)`；若启用 `theta_class`，其取值为 `{哨兵} ∪ [0, Nθ]`。
 * 边界：任何计算仅读写 core；ghost 区域由边界更新器统一写入。
@@ -41,8 +41,8 @@
 
 ## 6. 单步时间推进顺序（自然语言）
 
-1. **Pre-step**：同步 ghost；采样温度 `T`；由 `fs` 得相掩码（液/界/固）。
-2. **Nucleation**：在液相依据欠冷与 Thévoz 统计产生新核；写入 `grain_id, theta(/class)`，必要时微增 `fs`。
+1. **Pre-step**：同步 ghost；采样/更新温度 `T`；由 `fs` 得相掩码（液/界/固）。
+2. **Nucleation**：在液相依据过冷与 Thévoz 统计产生新核；写入 `grain_id, theta(/class)`，必要时微增 `fs`。
 3. **Interface（派生）**：在界面元胞计算 `C_L^*, C_S^*`、各向异性因子与曲率；不改持久场。
 4. **GrowthRule/MDCS**：按 `V_n` 与法向推进几何，写回 `fs, L_dia`（并据需要扩展 `grain_id`）。
 5. **SoluteSolver**：按体积分数加权方程更新 `CL, CS`，加入 `(1-k)·CL·∂fs/∂t` 的成对源/汇；可选回扩散与限幅。
@@ -64,14 +64,14 @@ while t < cfg.time.t_end:
 
   # Pre-step
   update_ghosts(grid, cfg.domain.bc)
-  Tbuf   ← TemperatureAdapter.sample(grid, t, cfg.temperature)
+  grid.T ← TemperatureAdapter.sample(grid, t, cfg.temperature)   # 现为持久量
   masks  ← classify_phases(grid.fs)
 
   # Core physics
-  Nucleation.apply(grid, Tbuf, rng, cfg.nucleation, masks)                               # 写 grain_id/theta
-  Interface.equilibrium(grid, Tbuf, cfg.physics.interface, cfg.physics.orientation, masks) # 仅派生量
-  GrowthRule.MDCS.step(grid, cfg.physics.mdcs, cfg.physics.orientation, dt=cfg.time.dt, masks=masks) # 写 fs/L_dia
-  SoluteSolver.advance(grid, cfg.physics.solute, dt=cfg.time.dt, masks=masks)            # 写 CL/CS
+  Nucleation.apply(grid, grid.T, rng, cfg.nucleation, masks)
+  Interface.equilibrium(grid, grid.T, cfg.physics.interface, cfg.physics.orientation, masks)
+  GrowthRule.MDCS.step(grid, cfg.physics.mdcs, cfg.physics.orientation, dt=cfg.time.dt, masks=masks)
+  SoluteSolver.advance(grid, cfg.physics.solute, dt=cfg.time.dt, masks=masks)
 
   # Post-step
   assert_invariants(grid, cfg.debug)
@@ -86,14 +86,14 @@ Writer.snapshot(grid, t, step, cfg.run)  # 结束补一次
 
 ## 8. 阶段 I/O 与副作用一览
 
-| 阶段           | 读                 | 写(持久)                              | 产出(派生/临时)                                | 允许的副作用                                    |
-| ------------ | ----------------- | ---------------------------------- | ---------------------------------------- | ----------------------------------------- |
-| Pre-step     | `grid`            | —                                  | `Tbuf`、相掩码                               | 无                                         |
-| Nucleation   | `grid, Tbuf, rng` | `grain_id, theta(/class), (少量 fs)` | —                                        | 无                                         |
-| Interface    | `grid, Tbuf`      | —                                  | `C_L^*, C_S^*`、`nx, ny, kappa, ani, V_n` | 无                                         |
-| GrowthRule   | `grid, 派生量`       | `fs, L_dia`（必要时扩展 `grain_id`）      | 前沿列表/几何临时量                               | 无                                         |
-| SoluteSolver | `grid, ∂fs/∂t`    | `CL, CS`                           | 系数/残差                                    | 无                                         |
-| Post-step    | `grid, t, step`   | —                                  | —                                        | **Writer.snapshot/checkpoint**、**Logger** |
+| 阶段           | 读               | 写(持久)                              | 产出(派生/临时)                                | 允许的副作用                                    |
+| ------------ | --------------- | ---------------------------------- | ---------------------------------------- | ----------------------------------------- |
+| Pre-step     | `grid`          | `T`                                | 相掩码                                      | 无                                         |
+| Nucleation   | `grid, T, rng`  | `grain_id, theta(/class), (少量 fs)` | —                                        | 无                                         |
+| Interface    | `grid, T`       | —                                  | `C_L^*, C_S^*`、`nx, ny, kappa, ani, V_n` | 无                                         |
+| GrowthRule   | `grid, 派生量`     | `fs, L_dia`（必要时扩展 `grain_id`）      | 前沿列表/几何临时量                               | 无                                         |
+| SoluteSolver | `grid, ∂fs/∂t`  | `CL, CS`                           | 系数/残差                                    | 无                                         |
+| Post-step    | `grid, t, step` | —                                  | —                                        | **Writer.snapshot/checkpoint**、**Logger** |
 
 ## 9. 早停条件与结束
 
@@ -105,3 +105,4 @@ Writer.snapshot(grid, t, step, cfg.run)  # 结束补一次
 ## 10. 变更记录
 
 * v0.1（2025-08-14）：首版，约定 Pre → Nucleation → Interface → MDCS → Solute → Post 的固定顺序；I/O 与随机性集中在 Engine。
+* v0.2（2025-08-17）：将 `T` 从派生量提升为持久字段，纳入快照与重启；调整 Pre-step 与 I/O 一览表相应条目。

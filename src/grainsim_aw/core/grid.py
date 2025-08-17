@@ -12,21 +12,22 @@ class Grid:
     grain_id: np.ndarray  # 晶粒 ID，int32
     theta: np.ndarray  # 晶粒取向角（弧度，规范到[0,2π)），float64
     L_dia: np.ndarray  # 偏心正方形“半对角线”长度，float64
+    T: np.ndarray  # 温度场 [K]，float64（v0.2起持久字段）
 
     # —— 网格几何 ——
-    ny: int  # 网格在 y 方向的尺寸
-    nx: int  # 网格在 x 方向的尺寸
-    dx: float  # 网格在 x 方向的间距
-    dy: float  # 网格在 y 方向的间距
-    nghost: int  # ghost 层数
+    ny: int
+    nx: int
+    dx: float
+    dy: float
+    nghost: int
 
     # —— 便捷属性 ——
     @property
-    def Ny(self) -> int:  # 含 ghost
+    def Ny(self) -> int:
         return self.ny + 2 * self.nghost
 
     @property
-    def Nx(self) -> int:  # 含 ghost
+    def Nx(self) -> int:
         return self.nx + 2 * self.nghost
 
     @property
@@ -40,7 +41,7 @@ class Grid:
         return self.fs.shape  # = (Ny, Nx)
 
 
-# —— 工具：按 dtype 统一分配一块形状 (Ny,Nx) 的数组 ——
+# —— 工具：统一分配 (Ny,Nx) 数组 ——
 def _alloc(ny: int, nx: int, nghost: int, *, dtype, fill=0.0):
     Ny = ny + 2 * nghost
     Nx = nx + 2 * nghost
@@ -59,6 +60,7 @@ def create_grid(domain_cfg: dict) -> Grid:
     gid = _alloc(ny, nx, g, dtype=np.int32, fill=0)  # 0=未分配
     th = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 取向角
     Ldia = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+    T = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 温度场
 
     return Grid(
         fs=fs,
@@ -67,6 +69,7 @@ def create_grid(domain_cfg: dict) -> Grid:
         grain_id=gid,
         theta=th,
         L_dia=Ldia,
+        T=T,
         ny=ny,
         nx=nx,
         dx=dx,
@@ -80,7 +83,7 @@ def update_ghosts(grid: Grid, bc: str = "neumann0"):
     g = grid.nghost
     if g == 0:
         return
-    fields = (grid.fs, grid.CL, grid.CS, grid.grain_id, grid.theta, grid.L_dia)
+    fields = (grid.fs, grid.CL, grid.CS, grid.grain_id, grid.theta, grid.L_dia, grid.T)
     for arr in fields:
         # 上下
         arr[:g, :] = arr[g : 2 * g, :]
