@@ -8,20 +8,22 @@
         "bc": "neumann0"
     },
     "physics": {
+        "interface": {
+            "T_L_eq": 933.47
+        },
         "orientation": {
             "fold": 4,
             "N_theta": 48
-        },
-        "interface": {
-            "T_L_eq": 933.47
         },
         "mdcs": {},
         "solute": {}
     },
     "nucleation": {
-        "rate_per_cell": 5.0,
         "dT_threshold": 5.0,
-        "seed_fs": 0.001
+        "prob_per_cell": 0.01,
+        "seed_fs": 0.001,
+        "fold": 4,
+        "N_theta": 48
     },
     "time": {
         "dt": 1e-3,
@@ -30,7 +32,7 @@
     },
     "run": {
         "seed": 42,
-        "output_dir": "data/output/run-minimal"
+        "output_dir": "data/output/run-nucleation"
     },
     "temperature": {
         "T_const": 1750.0
