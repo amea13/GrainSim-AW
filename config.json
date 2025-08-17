@@ -8,8 +8,20 @@
         "bc": "neumann0"
     },
     "physics": {
+        "orientation": {
+            "fold": 4,
+            "N_theta": 48
+        },
+        "interface": {
+            "T_L_eq": 933.47
+        },
         "mdcs": {},
-        "orientation": {}
+        "solute": {}
+    },
+    "nucleation": {
+        "rate_per_cell": 5.0,
+        "dT_threshold": 5.0,
+        "seed_fs": 0.001
     },
     "time": {
         "dt": 1e-3,

@@ -1,40 +1,78 @@
+from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 
 
 @dataclass
 class Grid:
-    fs: np.ndarray
-    CL: np.ndarray
-    CS: np.ndarray
-    ny: int
-    nx: int
-    dx: float
-    dy: float
-    nghost: int
+    # ——持久字段（入快照/重启）——
+    fs: np.ndarray  # 固相体积分数 [0,1]，float64
+    CL: np.ndarray  # 液相体平均浓度，float64
+    CS: np.ndarray  # 固相体平均浓度，float64
+    grain_id: np.ndarray  # 晶粒 ID，int32
+    theta: np.ndarray  # 晶粒取向角（弧度，规范到[0,2π)），float64
+    L_dia: np.ndarray  # 偏心正方形“半对角线”长度，float64
 
+    # —— 网格几何 ——
+    ny: int  # 网格在 y 方向的尺寸
+    nx: int  # 网格在 x 方向的尺寸
+    dx: float  # 网格在 x 方向的间距
+    dy: float  # 网格在 y 方向的间距
+    nghost: int  # ghost 层数
+
+    # —— 便捷属性 ——
     @property
-    def Ny(self):
+    def Ny(self) -> int:  # 含 ghost
         return self.ny + 2 * self.nghost
 
     @property
-    def Nx(self):
+    def Nx(self) -> int:  # 含 ghost
         return self.nx + 2 * self.nghost
 
     @property
     def core(self):
+        """返回 core（不含 ghost）的二维切片 (ys, xs)。"""
         g = self.nghost
         return slice(g, -g), slice(g, -g)
 
+    @property
+    def shape(self):
+        return self.fs.shape  # = (Ny, Nx)
+
+
+# —— 工具：按 dtype 统一分配一块形状 (Ny,Nx) 的数组 ——
+def _alloc(ny: int, nx: int, nghost: int, *, dtype, fill=0.0):
+    Ny = ny + 2 * nghost
+    Nx = nx + 2 * nghost
+    return np.full((Ny, Nx), fill_value=fill, dtype=dtype)
+
 
 def create_grid(domain_cfg: dict) -> Grid:
-    ny, nx = domain_cfg["ny"], domain_cfg["nx"]
-    dx, dy = domain_cfg["dx"], domain_cfg["dy"]
-    g = domain_cfg.get("nghost", 3)
-    fs = np.zeros((ny + 2 * g, nx + 2 * g), dtype=np.float64)
-    CL = np.zeros_like(fs)
-    CS = np.zeros_like(fs)
-    return Grid(fs=fs, CL=CL, CS=CS, ny=ny, nx=nx, dx=dx, dy=dy, nghost=g)
+    ny, nx = int(domain_cfg["ny"]), int(domain_cfg["nx"])
+    dx, dy = float(domain_cfg["dx"]), float(domain_cfg["dy"])
+    g = int(domain_cfg.get("nghost", 3))
+
+    # 持久字段统一初始化
+    fs = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+    CL = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+    CS = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+    gid = _alloc(ny, nx, g, dtype=np.int32, fill=0)  # 0=未分配
+    th = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 取向角
+    Ldia = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+
+    return Grid(
+        fs=fs,
+        CL=CL,
+        CS=CS,
+        grain_id=gid,
+        theta=th,
+        L_dia=Ldia,
+        ny=ny,
+        nx=nx,
+        dx=dx,
+        dy=dy,
+        nghost=g,
+    )
 
 
 def update_ghosts(grid: Grid, bc: str = "neumann0"):
@@ -42,7 +80,8 @@ def update_ghosts(grid: Grid, bc: str = "neumann0"):
     g = grid.nghost
     if g == 0:
         return
-    for arr in (grid.fs, grid.CL, grid.CS):
+    fields = (grid.fs, grid.CL, grid.CS, grid.grain_id, grid.theta, grid.L_dia)
+    for arr in fields:
         # 上下
         arr[:g, :] = arr[g : 2 * g, :]
         arr[-g:, :] = arr[-2 * g : -g, :]
@@ -52,10 +91,11 @@ def update_ghosts(grid: Grid, bc: str = "neumann0"):
 
 
 def classify_phases(fs: np.ndarray, nghost: int, tau_liq=1e-12, tau_sol=1 - 1e-12):
-    """基于 fs 的三态掩码(液/界/固)，只返回包含 ghost 的布尔数组。"""
-    g = nghost
+    """
+    基于 fs 的三态掩码（液/界/固），返回包含 ghost 的布尔数组。
+    注意：统计或积分时请只在 grid.core 区域使用这些掩码。
+    """
     mask_liq = fs < tau_liq
     mask_sol = fs > tau_sol
     mask_int = ~(mask_liq | mask_sol)
-    # 清掉 ghost 的统计副作用由调用方控制；这里按全域掩码返回
     return {"mask_liq": mask_liq, "mask_int": mask_int, "mask_sol": mask_sol}
