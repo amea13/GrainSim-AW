@@ -1,181 +1,170 @@
+# src/grainsim_aw/viz/liveplot.py
 from __future__ import annotations
-from typing import Optional
+import os, time
+from typing import List, Optional, Dict, Union
 import numpy as np
+from pathlib import Path
+
+import matplotlib
+
+if "DISPLAY" not in os.environ and os.name != "nt":
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.axes import Axes
-from matplotlib.image import AxesImage
-from matplotlib.text import Text
-from matplotlib.colors import BoundaryNorm, ListedColormap
+
+
+def _core_view(a: np.ndarray, nghost: int) -> np.ndarray:
+    if nghost <= 0:
+        return a
+    return a[nghost:-nghost, nghost:-nghost]
 
 
 class LivePlotter:
+    """
+    轻量实时可视化（限帧 + 结束阻塞）：
+    - fields: ["fs", "T", "CL"] 等
+    - every: 步频采样
+    - max_fps: 最大刷新帧率（默认 5）
+    - block_on_finish: 结束后是否阻塞等待手动关闭窗口
+    - save_frames: 可选导出帧
+    """
+
     def __init__(
-        self, field: str = "fs", *, autoscale: bool = False, show_ghosts: bool = False
+        self,
+        grid,
+        fields: Optional[List[str]] = None,
+        every: int = 10,
+        figsize=(10, 4),
+        dpi: int = 100,
+        save_frames: bool = False,
+        outdir: Optional[Union[str, Path]] = None,
+        clim: Optional[Dict[str, tuple]] = None,
+        with_colorbar: bool = False,
+        title_prefix: str = "Live",
+        max_fps: float = 5.0,
+        block_on_finish: bool = True,
     ):
-        self.field = field
-        self.autoscale = autoscale
-        self.show_ghosts = show_ghosts
-        self.fig: Optional[Figure] = None
-        self.ax: Optional[Axes] = None
-        self.im: Optional[AxesImage] = None
-        self.txt: Optional[Text] = None
-        self.vmin: Optional[float] = None
-        self.vmax: Optional[float] = None
-        self._gid_cmap: Optional[ListedColormap] = None
-        self._gid_norm: Optional[BoundaryNorm] = None
+        self.grid = grid
+        self.fields = fields or ["fs", "T", "CL"]
+        self.every = max(1, int(every))
+        self.save_frames = bool(save_frames)
+        self.title_prefix = title_prefix
+        self.clim = clim or {}
+        self.with_colorbar = with_colorbar
+        self.max_fps = max(0.1, float(max_fps))
+        self.block_on_finish = bool(block_on_finish)
 
-    def start(self, grid):
-        A = self._extract(grid)
-        self.fig, self.ax = plt.subplots()
-        # 不同后端安全设标题
-        mgr = getattr(self.fig.canvas, "manager", None)
-        if mgr is not None and hasattr(mgr, "set_window_title"):
-            try:
-                mgr.set_window_title(f"Live: {self.field}")
-            except Exception:
-                pass
-        assert self.ax is not None  # 给类型检查器吃一个确定性
+        self.enabled = True
+        self.images = []
+        self.axes = []
+        self.cbars = []
 
-        self.ax.set_axis_off()
-
-        if self.field == "grain_id":
-            gid_max = int(np.nanmax(A))
-            self._set_gid_cmap(gid_max)
-            self.im = self.ax.imshow(
-                A,
-                origin="lower",
-                cmap=self._gid_cmap,
-                norm=self._gid_norm,
-                interpolation="nearest",
-            )
-        else:
-            if self.autoscale:
-                vmin = float(np.nanmin(A))
-                vmax = float(np.nanmax(A))
-                if not np.isfinite(vmax) or vmax == vmin:
-                    vmin, vmax = 0.0, 1.0
-            else:
-                if self.field == "fs":
-                    vmin, vmax = 0.0, 1.0
-                else:
-                    vmin = float(np.nanmin(A))
-                    vmax = float(np.nanmax(A))
-                    if not np.isfinite(vmax) or vmax == vmin:
-                        vmin, vmax = 0.0, 1.0
-            self.vmin, self.vmax = vmin, vmax
-            self.im = self.ax.imshow(
-                A, origin="lower", vmin=vmin, vmax=vmax, interpolation="nearest"
-            )
-            try:
-                self.fig.colorbar(
-                    self.im, ax=self.ax, fraction=0.046, pad=0.04, label=self.field
-                )
-            except Exception:
-                pass
-
-        self.txt = self.ax.text(
-            0.02,
-            0.98,
-            "step=?\nt=?",
-            transform=self.ax.transAxes,
-            va="top",
-            ha="left",
-            fontsize=9,
-            color="black",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.6),
-        )
-        plt.ion()
-        plt.show(block=False)
-        plt.pause(0.001)
-
-    def update(self, grid, t: float, step: int) -> None:
-        if not self.alive:
-            return
-        assert (
-            self.im is not None and self.ax is not None and self.txt is not None
-        )  # 消除“可能为 None”的告警
-
-        A = self._extract(grid)
-
-        if self.field == "grain_id":
-            gid_max_now = int(np.nanmax(A))
-            need_recolor = (self._gid_cmap is None) or (
-                gid_max_now + 1 > int(self._gid_cmap.N)
-            )
-            if need_recolor:
-                self._set_gid_cmap(gid_max_now)
-                # 判空后再改色图
-                if self._gid_cmap is not None and self._gid_norm is not None:
-                    self.im.set_cmap(self._gid_cmap)
-                    self.im.set_norm(self._gid_norm)
-        else:
-            if self.autoscale:
-                vmin = float(np.nanmin(A))
-                vmax = float(np.nanmax(A))
-                if np.isfinite(vmax) and vmax > vmin:
-                    self.im.set_clim(vmin=vmin, vmax=vmax)
-
-        self.im.set_data(A)
-        self.txt.set_text(f"step={step}\nt={t:.4g}")
-        self.ax.set_title(self.field)
-        plt.pause(0.001)
-
-    def close(self) -> None:
-        if self.fig is not None:
-            try:
-                plt.close(self.fig)
-            finally:
-                self.fig = None
-                self.ax = None
-                self.im = None
-                self.txt = None
-
-    @property
-    def alive(self) -> bool:
-        return (self.fig is not None) and plt.fignum_exists(self.fig.number)
-
-    def _extract(self, grid) -> np.ndarray:
-        if self.show_ghosts:
-            sl = (slice(0, grid.Ny), slice(0, grid.Nx))
-        else:
-            sl = grid.core
-        A = getattr(grid, self.field)
-        return A[sl]
-
-    def _set_gid_cmap(self, gid_max: int) -> None:
-        gid_max = max(1, int(gid_max))
-        rng = np.random.default_rng(42)
-
-        # 背景色 1 行（RGBA）
-        bg = np.array([[0.95, 0.95, 0.95, 1.0]], dtype=float)
-
-        # 为每个晶粒生成随机 RGB，并补上 alpha=1，组成 RGBA
-        rgb = rng.random((gid_max, 3))  # (gid_max, 3)
-        a = np.ones((gid_max, 1), dtype=float)  # (gid_max, 1)
-        rgba = np.hstack([rgb, a])  # (gid_max, 4)
-
-        # 叠在一起：第 0 号颜色用于背景，1..gid_max 对应晶粒 1..gid_max
-        colors = np.vstack([bg, rgba])  # (gid_max+1, 4)
-
-        self._gid_cmap = ListedColormap(colors)
-        bounds = np.arange(-0.5, gid_max + 1.5, 1.0)
-        self._gid_norm = BoundaryNorm(bounds, self._gid_cmap.N)
-
-    def block(self) -> None:
-        """阻塞直到用户关闭窗口。"""
-        if self.fig is None:
-            return
-        plt.ioff()  # 关闭交互式，进入阻塞 show
+        # 交互模式：允许非阻塞刷新
         try:
-            # 有的后端支持把窗口置顶，不行就忽略
-            mgr = getattr(self.fig.canvas, "manager", None)
-            if mgr is not None and hasattr(mgr, "window"):
-                try:
-                    mgr.window.activateWindow()
-                    mgr.window.raise_()
-                except Exception:
-                    pass
+            plt.ion()
         except Exception:
             pass
-        plt.show()  # 阻塞直到窗口被关闭
+
+        n = len(self.fields)
+        self.fig, self.axes = plt.subplots(
+            1,
+            n,
+            figsize=figsize if n > 1 else (figsize[0] / 2, figsize[1]),
+            dpi=dpi,
+            squeeze=False,
+        )
+        self.axes = self.axes[0]
+
+        # 输出目录
+        self.frame_dir = None
+        if self.save_frames:
+            base = Path(outdir) if outdir is not None else Path(".")
+            self.frame_dir = base / "live"
+            self.frame_dir.mkdir(parents=True, exist_ok=True)
+
+        # 初始化 imshow
+        for i, name in enumerate(self.fields):
+            ax = self.axes[i] if n > 1 else self.axes
+            arr = getattr(self.grid, name, None)
+            if arr is None:
+                data = np.zeros((4, 4))
+                ax.set_title(f"{name} (missing)")
+            else:
+                data = _core_view(arr, self.grid.nghost)
+                ax.set_title(name)
+
+            im = ax.imshow(data, origin="lower", interpolation="nearest")
+            if name in self.clim:
+                vmin, vmax = self.clim[name]
+                im.set_clim(vmin, vmax)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+            self.images.append(im)
+
+            if self.with_colorbar:
+                cb = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                self.cbars.append(cb)
+            else:
+                self.cbars.append(None)
+
+        self.fig.tight_layout()
+
+        # 限帧计时器
+        self._last_draw = 0.0
+        self._min_interval = 1.0 / self.max_fps
+
+    def update(self, grid, step: int, t: float):
+        if step % self.every != 0:
+            return
+
+        # 限帧：若没到时间，跳过一次刷新
+        now = time.perf_counter()
+        if now - self._last_draw < self._min_interval:
+            return
+        self._last_draw = now
+
+        # 刷数据
+        for name, im in zip(self.fields, self.images):
+            arr = getattr(grid, name, None)
+            if arr is None:
+                continue
+            data = _core_view(arr, grid.nghost)
+            im.set_data(data)
+            if name not in self.clim:
+                vmin = float(np.nanmin(data))
+                vmax = float(np.nanmax(data))
+                if np.isfinite(vmin) and np.isfinite(vmax) and vmin != vmax:
+                    im.set_clim(vmin, vmax)
+
+        self.fig.suptitle(f"{self.title_prefix}  t={t:.5g}  step={step}")
+        try:
+            self.fig.canvas.draw_idle()
+            # 这里给一个更长一点的 pause，避免看起来“闪”
+            plt.pause(0.03)
+        except Exception:
+            self.enabled = False
+
+        # 可选保存帧
+        if self.save_frames and self.frame_dir is not None:
+            fname = self.frame_dir / f"frame_{step:08d}.png"
+            self.fig.savefig(fname)
+
+    def close(self):
+        # 结束时固定最后一帧；若配置了阻塞，就等待你手动关闭窗口
+        try:
+            self.fig.canvas.draw()
+        except Exception:
+            pass
+
+        if (
+            self.block_on_finish
+            and self.enabled
+            and matplotlib.get_backend().lower() != "agg"
+        ):
+            try:
+                plt.ioff()
+                plt.show()  # 阻塞到关窗为止
+            except Exception:
+                pass
+        else:
+            plt.close(self.fig)

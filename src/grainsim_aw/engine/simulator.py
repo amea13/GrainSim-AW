@@ -8,8 +8,9 @@ from ..interface import compute_interface_fields
 from ..growth_capture import step as mdcs_step
 from ..multiphysics import solute_advance
 from ..multiphysics import sample_T
-from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
+from ..viz.liveplot import LivePlotter
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +37,26 @@ class Simulator:
         self.out = prepare_out(cfg["run"]["output_dir"])
         write_meta(cfg, self.out)
         update_ghosts(self.grid, cfg["domain"]["bc"])
+        viz_cfg = cfg.get("viz", {})
+        self.live = None
+        if viz_cfg.get("live", False):
+            self.live = LivePlotter(
+                self.grid,
+                fields=viz_cfg.get("fields", ["fs", "T", "CL"]),
+                every=viz_cfg.get("every", 10),
+                save_frames=viz_cfg.get("save_frames", False),
+                outdir=str(self.out),
+                clim=viz_cfg.get("clim", None),
+                with_colorbar=viz_cfg.get("with_colorbar", False),
+                title_prefix=viz_cfg.get("title_prefix", "Live"),
+                max_fps=viz_cfg.get("max_fps", 5),
+                block_on_finish=viz_cfg.get("block_on_finish", True),
+            )
 
         init_cfg = self.cfg.get("init", {})
         if init_cfg:
             placed = seed_initialize(self.grid, self.rng, init_cfg)
             logger.info("Init seeds placed: %d", placed)
-
-        self.live: Optional[LivePlotter] = None
-        live_cfg = self.cfg.get("viz", {}).get("live", {})
-        if live_cfg.get("enabled", False):
-            try:
-                self.live = LivePlotter(
-                    field=live_cfg.get("field", "fs"),
-                    autoscale=bool(live_cfg.get("autoscale", False)),
-                    show_ghosts=bool(live_cfg.get("show_ghosts", False)),
-                )
-                logger.info(
-                    "LivePlotter enabled: field=%s", live_cfg.get("field", "fs")
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to init LivePlotter; continue without live window."
-                )
 
     def run(self):
         dt = self.cfg["time"]["dt"]
@@ -67,9 +66,6 @@ class Simulator:
         t = 0.0
         step = 0
 
-        if self.live:
-            self.live.start(self.grid)
-
         while t < t_end:
             step += 1
             t += dt
@@ -78,6 +74,7 @@ class Simulator:
             update_ghosts(self.grid, self.cfg["domain"]["bc"])
             # 温度为持久字段：每步采样并写入 grid.T
             self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
+
             masks = classify_phases(self.grid.fs, self.grid.nghost)
 
             # Core physics（各模块内部直接读取 grid.T）
@@ -114,28 +111,13 @@ class Simulator:
             M = _total_solute_mass(self.grid)
             logger.info(f"Total solute mass (diag): {M:.6e}")
 
+            if self.live is not None:
+                self.live.update(self.grid, step, t)
+
             # Post-step
             if step % save_every == 0:
                 snapshot(self.grid, t, step, self.out)
 
-            # 直播更新
-            live_cfg = self.cfg.get("viz", {}).get("live", {})
-            every: int = int(live_cfg.get("every", 1))
-            if self.live and self.live.alive:
-                if step % max(1, every) == 0:
-                    self.live.update(self.grid, t, step)
-            elif self.live and not self.live.alive:
-                logger.info("Live window closed by user; disabling live updates.")
-                self.live = None
-
+        if self.live is not None:
+            self.live.close()
         snapshot(self.grid, t, step, self.out)
-
-        # 是否保持窗口：默认 True，可用配置关闭
-        live_cfg = self.cfg.get("viz", {}).get("live", {})
-        keep_open = bool(live_cfg.get("keep_open", True))
-
-        if keep_open and self.live is not None and self.live.alive:
-            logger.info(
-                "Simulation finished — live window will stay open. Close it to exit."
-            )
-            self.live.block()
