@@ -70,7 +70,7 @@ class Simulator:
                 nucl_apply(self.grid, self.rng, self.cfg.get("nucleation", {}), masks)
                 logger.info("Nucleation done (stub)")
 
-                # 计算界面相关的物理量 主要是CL^*
+                # 计算界面相关的物理量 主要是
                 fields = compute_interface_fields(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),
@@ -82,7 +82,7 @@ class Simulator:
                 # 保存旧固相分数场以计算变化率
                 fs_old = self.grid.fs.copy()
 
-                # 处理MDCS捕获 更新固相分数
+                # 更新界面胞固相率与偏心正方形半对角线长度
                 mdcs_step(
                     self.grid,
                     fields,
