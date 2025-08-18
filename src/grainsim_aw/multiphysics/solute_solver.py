@@ -306,3 +306,18 @@ def solute_advance(
     grid.CS[ys, xs] = CS_core
 
     # done; ghost update left to the caller's usual update_ghosts at the next step
+
+
+# 计算整个网格中溶质的总质量，用于诊断是否守恒
+def total_solute_mass(grid) -> float:
+    """
+    诊断用总溶质量：M = ∑ [ α CL + (1-α) CS ] dx dy，
+    其中 α = 1 - fs 为液相体积分数。
+    只在 core 统计，避免 ghost 干扰。
+    """
+    alpha = 1.0 - grid.fs
+    cell = grid.dx * grid.dy
+    g = grid.nghost
+    core = (slice(g, -g), slice(g, -g))
+    M = np.sum(alpha[core] * grid.CL[core] + (1.0 - alpha[core]) * grid.CS[core]) * cell
+    return float(M)
