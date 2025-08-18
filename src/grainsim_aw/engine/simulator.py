@@ -11,7 +11,6 @@ from ..multiphysics import sample_T
 from ..io.writer import prepare_out, write_meta, snapshot
 from ..viz.liveplot import LivePlotter
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -37,22 +36,7 @@ class Simulator:
         self.out = prepare_out(cfg["run"]["output_dir"])
         write_meta(cfg, self.out)
         update_ghosts(self.grid, cfg["domain"]["bc"])
-        viz_cfg = cfg.get("viz", {})
-        self.live = None
-        if viz_cfg.get("live", False):
-            self.live = LivePlotter(
-                self.grid,
-                fields=viz_cfg.get("fields", ["fs", "T", "CL"]),
-                every=viz_cfg.get("every", 10),
-                save_frames=viz_cfg.get("save_frames", False),
-                outdir=str(self.out),
-                clim=viz_cfg.get("clim", None),
-                with_colorbar=viz_cfg.get("with_colorbar", False),
-                title_prefix=viz_cfg.get("title_prefix", "Live"),
-                max_fps=viz_cfg.get("max_fps", 5),
-                block_on_finish=viz_cfg.get("block_on_finish", True),
-            )
-
+        self.live = LivePlotter(self.cfg.get("viz", {}).get("live", {}))
         init_cfg = self.cfg.get("init", {})
         if init_cfg:
             placed = seed_initialize(self.grid, self.rng, init_cfg)
@@ -65,64 +49,67 @@ class Simulator:
 
         t = 0.0
         step = 0
+        # —— 启动实时显示（只建一次窗）——
+        self.live.start(self.grid)
+        try:
+            while t < t_end:
+                step += 1
+                t += dt
 
-        while t < t_end:
-            step += 1
-            t += dt
+                # Pre-step
+                update_ghosts(self.grid, self.cfg["domain"]["bc"])
 
-            # Pre-step
-            update_ghosts(self.grid, self.cfg["domain"]["bc"])
-            # 温度为持久字段：每步采样并写入 grid.T
-            self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
+                # 温度为持久字段：每步采样并写入 grid.T
+                self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
 
-            masks = classify_phases(self.grid.fs, self.grid.nghost)
+                masks = classify_phases(self.grid.fs, self.grid.nghost)
 
-            # Core physics（各模块内部直接读取 grid.T）
-            nucl_apply(self.grid, self.rng, self.cfg.get("nucleation", {}), masks)
-            logger.info("Nucleation done (stub)")
+                # Core physics（各模块内部直接读取 grid.T）
+                nucl_apply(self.grid, self.rng, self.cfg.get("nucleation", {}), masks)
+                logger.info("Nucleation done (stub)")
 
-            fields = compute_interface_fields(
-                self.grid,
-                self.cfg.get("physics", {}).get("interface", {}),
-                self.cfg.get("physics", {}).get("orientation", {}),
-                masks,
-            )
-            logger.info("Interface fields computed (stub)")
+                fields = compute_interface_fields(
+                    self.grid,
+                    self.cfg.get("physics", {}).get("interface", {}),
+                    self.cfg.get("physics", {}).get("orientation", {}),
+                    masks,
+                )
+                logger.info("Interface fields computed (stub)")
 
-            fs_old = self.grid.fs.copy()
+                fs_old = self.grid.fs.copy()
 
-            mdcs_step(
-                self.grid,
-                fields,
-                self.cfg.get("physics", {}).get("mdcs", {}),
-                self.cfg.get("physics", {}).get("orientation", {}),
-                dt,
-                masks,
-            )
-            logger.info("MDCS done (stub)")
+                mdcs_step(
+                    self.grid,
+                    fields,
+                    self.cfg.get("physics", {}).get("mdcs", {}),
+                    self.cfg.get("physics", {}).get("orientation", {}),
+                    dt,
+                    masks,
+                )
+                logger.info("MDCS done (stub)")
 
-            fs_dot = (self.grid.fs - fs_old) / dt
+                fs_dot = (self.grid.fs - fs_old) / dt
 
-            solute_advance(
-                self.grid,
-                self.cfg.get("physics", {}).get("solute", {}),
-                dt,
-                masks,
-                fs_dot=fs_dot,
-            )
-            logger.info("solute_advance done (stub)")
+                solute_advance(
+                    self.grid,
+                    self.cfg.get("physics", {}).get("solute", {}),
+                    dt,
+                    masks,
+                    fs_dot=fs_dot,
+                )
+                logger.info("solute_advance done (stub)")
 
-            # 诊断
-            M = _total_solute_mass(self.grid)
-            logger.info(f"Total solute mass (diag): {M:.6e}")
+                # 诊断
+                M = _total_solute_mass(self.grid)
+                logger.info(f"Total solute mass (diag): {M:.6e}")
 
-            if self.live is not None:
-                self.live.update(self.grid, step, t)
+                # Post-step
+                if step % save_every == 0:
+                    snapshot(self.grid, t, step, self.out)
 
-            # Post-step
-            if step % save_every == 0:
-                snapshot(self.grid, t, step, self.out)
+                self.live.update(self.grid, t, step)
 
-        if self.live is not None:
+            snapshot(self.grid, t, step, self.out)
+        finally:
+            # 关闭窗口，避免“每步都弹窗/闪退”的问题
             self.live.close()
-        snapshot(self.grid, t, step, self.out)

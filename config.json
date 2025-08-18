@@ -50,16 +50,23 @@
         "seed_fs": 0.01
     },
     "viz": {
-        "live": true,
-        "fields": [
-            "fs",
-            "T",
-            "CL"
-        ],
-        "every": 10,
-        "max_fps": 5,         
-        "block_on_finish": true,   
-        "save_frames": false,
-        "with_colorbar": false
+        "live": {
+            "enabled": true,
+            "stride": 5,
+            "fields": [
+                "T",
+                "CL",
+                "grain_id",
+                "fs"
+            ],
+            "percentile": 99.0,
+            "ranges": {
+                "fs": [
+                    0.0,
+                    1.0
+                ]
+            },
+            "keep_open": true
+        }
     }
 }

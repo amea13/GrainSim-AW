@@ -64,6 +64,8 @@ GrainSim-AW
 │     └─ __init__.py
 └─ tests
    ├─ test_acceptance_basic.py
-   └─ test_solute_min.py
+   ├─ test_liq_diffusion_1d.py
+   ├─ test_solute_min.py
+   └─ vis_solute_case3.py
 
 ```
