@@ -1,9 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any
-import logging
 import numpy as np
-
-logger = logging.getLogger(__name__)
 
 
 def _normalize_angle(theta: np.ndarray) -> np.ndarray:
@@ -38,11 +35,6 @@ def apply(
     ----
     None（就地更新 grid；当前占位版不做任何修改）
     """
-
-    # 检查液相掩码
-    if masks is None or "mask_liq" not in masks:
-        logger.debug("[nucleation] 未提供液相掩码，跳过。")
-        return
 
     gslice = grid.core  # (slice_y, slice_x)
     liq_core = masks["mask_liq"][gslice]
@@ -82,28 +74,12 @@ def apply(
     current_total = (
         int(np.max(grid.grain_id[gslice])) if np.any(grid.grain_id[gslice]) else 0
     )
-    if num_eligible == 0 or prob_per_cell <= 0.0:
-        logger.info(
-            "Nucleation: new=0, total=%d (eligible=%d, p=%.3g)",
-            current_total,
-            num_eligible,
-            prob_per_cell,
-        )
-        return
 
     # 4) 伯努利抽样：每个候选以 p 命中
     r = rng.random(size=eligible.shape)
     hit = eligible & (r < prob_per_cell)
 
     n_new = int(np.count_nonzero(hit))
-    if n_new == 0:
-        logger.info(
-            "Nucleation: new=0, total=%d (eligible=%d, p=%.3g)",
-            current_total,
-            num_eligible,
-            prob_per_cell,
-        )
-        return
 
     # 5) 为命中元胞分配连续 grain_id
     current_max = (
@@ -126,16 +102,3 @@ def apply(
     total_now = (
         int(np.max(grid.grain_id[gslice])) if np.any(grid.grain_id[gslice]) else 0
     )
-    logger.info(
-        "Nucleation: new=%d, total=%d (eligible=%d, p=%.3g)",
-        n_new,
-        total_now,
-        num_eligible,
-        prob_per_cell,
-    )
-
-    if logger.isEnabledFor(logging.DEBUG):
-        counts = np.bincount(c, minlength=Ntheta)
-        logger.debug(
-            "Nucleation θ_class histogram (Ntheta=%d): %s", Ntheta, counts.tolist()
-        )

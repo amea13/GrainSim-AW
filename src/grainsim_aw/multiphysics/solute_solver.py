@@ -192,7 +192,12 @@ def _jacobi_sweep1(aP, Ge, Gw, Gn, Gs, b, phi, nghost, active, max_iter, tol):
 
 
 def solute_advance(
-    grid, cfg: Dict, dt: float, masks: Dict[str, np.ndarray], fs_dot: np.ndarray
+    grid,
+    cfg: Dict,
+    dt: float,
+    masks: Dict[str, np.ndarray],
+    CL_star: np.ndarray,
+    fs_dot: np.ndarray,
 ) -> None:
     """Advance solute fields by one time step.
 
@@ -247,7 +252,8 @@ def solute_advance(
     # paired source, core region
     fs_dot_core = fs_dot[ys, xs]
     CL_old_core = CL_old[ys, xs]
-    S_pair = (1.0 - k) * CL_old_core * fs_dot_core  # [per time]
+    CL_star_core = CL_star[ys, xs]
+    S_pair = (1.0 - k) * CL_star_core * fs_dot_core  # [per time]
 
     # accumulation coefficients aP and RHS b for liquid
     alpha_np1_c = alpha_np1[ys, xs]

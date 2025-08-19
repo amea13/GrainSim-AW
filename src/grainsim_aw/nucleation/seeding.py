@@ -56,10 +56,12 @@ def _Ldia_max(theta: float, dx: float) -> float:
 
 
 def _infect_ring_by_vertices(
-    grid, i0: int, j0: int, theta0: float, eps_over: float, fs_child: float
+    grid, i0: int, j0: int, theta0: float, eps_over: float, fs_child: float, k0: float
 ) -> int:
     """
     以 (i0,j0) 为父（已 fs=1），用 L_seed=(0.5+eps_over)*Lmax 的四个顶点感染邻元为界面。
+    新界面元初始化：fs=fs_child，L_dia=fs*Lmax，ecc=顶点偏移，grain_id/theta 继承；
+    溶质：CS = k0 * CL（不改 CL）。
     返回感染成功的邻元个数。
     """
     fs = grid.fs
@@ -68,6 +70,8 @@ def _infect_ring_by_vertices(
     ecc_x = grid.ecc_x
     ecc_y = grid.ecc_y
     Ldia = grid.L_dia
+    CL = grid.CL
+    CS = grid.CS
 
     dx = float(grid.dx)
     dy = float(grid.dy)
@@ -85,10 +89,10 @@ def _infect_ring_by_vertices(
     ux, uy = ct, st
     vx, vy = -st, ct
     verts = [
-        (xC + Lseed * ux, yC + Lseed * uy),  # +u
-        (xC + Lseed * vx, yC + Lseed * vy),  # +v
-        (xC - Lseed * ux, yC - Lseed * uy),  # -u
-        (xC - Lseed * vx, yC - Lseed * vy),  # -v
+        (xC + Lseed * ux, yC + Lseed * uy),
+        (xC + Lseed * vx, yC + Lseed * vy),
+        (xC - Lseed * ux, yC - Lseed * uy),
+        (xC - Lseed * vx, yC - Lseed * vy),
     ]
 
     placed = 0
@@ -97,7 +101,7 @@ def _infect_ring_by_vertices(
         ci, cj = _map_abs_point_to_index(xv, yv, dx, dy, i0c, j0c)
         if not _in_core(ci, cj, g, Ny, Nx):
             continue
-        if fs[ci, cj] > tau_liq:  # 仅感染液相
+        if fs[ci, cj] > tau_liq:  # 仅感染“当前液相”元
             continue
 
         # 继承晶粒属性
@@ -109,9 +113,13 @@ def _infect_ring_by_vertices(
         ecc_x[ci, cj] = xv - xc
         ecc_y[ci, cj] = yv - yc
 
-        # 初始化界面几何
+        # 几何初始化
         fs[ci, cj] = max(fs[ci, cj], fs_child)
         Ldia[ci, cj] = max(Ldia[ci, cj], fs[ci, cj] * _Ldia_max(th[ci, cj], dx))
+
+        # 溶质初始化：界面平衡 CS = k0 * CL（不改 CL）
+        CS[ci, cj] = k0 * CL[ci, cj]
+
         placed += 1
 
     return placed
@@ -141,6 +149,7 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
     edge = str(cfg.get("edge", "north")).lower()
     eps_over = float(cfg.get("eps_over_edge", 0.02))
     fs_child = float(cfg.get("capture_seed_fs", 0.005))
+    k0 = float(cfg.get("k0", 0.34))
 
     # 取向：固定角或随机
     if cfg.get("random_theta", False):
@@ -161,6 +170,8 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
     ecc_x = grid.ecc_x
     ecc_y = grid.ecc_y
     Ldia = grid.L_dia
+    CL = grid.CL
+    CS = grid.CS
 
     dx = float(grid.dx)
     dy = float(grid.dy)
@@ -231,8 +242,13 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
         ecc_y[i0, j0] = 0.0
         Ldia[i0, j0] = _Ldia_max(theta0, dx)
 
+        # —— 溶质初始化（核心）：CS = k0 * CL_old；CL = 0 —— #
+        CL_old = CL[i0, j0]
+        CS[i0, j0] = k0 * CL_old
+        CL[i0, j0] = 0.0
+
         # 2) 一次性感染：按取向四顶点感染（一级或二级邻胞，取决于 θ）
-        _infect_ring_by_vertices(grid, i0, j0, theta0, eps_over, fs_child)
+        _infect_ring_by_vertices(grid, i0, j0, theta0, eps_over, fs_child, k0)
 
         placed += 1
         next_gid += 1

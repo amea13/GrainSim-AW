@@ -20,17 +20,11 @@ def compute_velocity(
     CLs: Optional[np.ndarray] = None,
     CSs: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Stefan 面通量法（含固相扩散）
-    需要 grid 提供 fs, CL, CS, T, dx, dy；需要 CLs/CSs 为界面浓度
-    返回 Vn, Vx, Vy（与 fs 同形状，含 ghost）
-    """
-    # 缺必需对象则退化为零场（便于兼容）
+    # 缺依赖则返回零
     if grid is None or CLs is None or CSs is None:
-        z = np.zeros(nx.shape, dtype=float)
+        z = np.zeros_like(nx, dtype=float)
         return z, z, z
 
-    fs = grid.fs
     CL = grid.CL
     CS = grid.CS
     T = grid.T
@@ -39,72 +33,40 @@ def compute_velocity(
 
     k0 = float(cfg_if.get("k0", 1.0))
 
-    shape = fs.shape
-    Vx = np.zeros(shape, dtype=float)
-    Vy = np.zeros(shape, dtype=float)
+    # 扩散率（元胞中心）
+    DL = Dl_from_T(T)
+    DS = Ds_from_T(T)
 
-    # --- 计算面开口（闸门） ---
-    fs_W = np.minimum(fs, np.roll(fs, 1, 1))
-    fs_E = np.minimum(fs, np.roll(fs, -1, 1))
-    fs_S = np.minimum(fs, np.roll(fs, 1, 0))
-    fs_N = np.minimum(fs, np.roll(fs, -1, 0))
-
-    alpha = 1.0 - fs
-    a_W = np.minimum(alpha, np.roll(alpha, 1, 1))
-    a_E = np.minimum(alpha, np.roll(alpha, -1, 1))
-    a_S = np.minimum(alpha, np.roll(alpha, 1, 0))
-    a_N = np.minimum(alpha, np.roll(alpha, -1, 0))
-
-    # --- 邻居值（中心差分邻接） ---
-    CL_W = np.roll(CL, 1, 1)
+    # 中心差分梯度
     CL_E = np.roll(CL, -1, 1)
-    CL_S = np.roll(CL, 1, 0)
+    CL_W = np.roll(CL, 1, 1)
     CL_N = np.roll(CL, -1, 0)
-    CS_W = np.roll(CS, 1, 1)
+    CL_S = np.roll(CL, 1, 0)
     CS_E = np.roll(CS, -1, 1)
-    CS_S = np.roll(CS, 1, 0)
+    CS_W = np.roll(CS, 1, 1)
     CS_N = np.roll(CS, -1, 0)
+    CS_S = np.roll(CS, 1, 0)
 
-    # --- 温度相关扩散系数：面上取算术平均 ---
-    DLc = Dl_from_T(T)  # cell-centered
-    DSc = Ds_from_T(T)
+    dCLdx = (CL_E - CL_W) / (2.0 * dx)
+    dCLdy = (CL_N - CL_S) / (2.0 * dy)
+    dCSdx = (CS_E - CS_W) / (2.0 * dx)
+    dCSdy = (CS_N - CS_S) / (2.0 * dy)
 
-    DL_W = 0.5 * (DLc + np.roll(DLc, 1, 1))
-    DL_E = 0.5 * (DLc + np.roll(DLc, -1, 1))
-    DL_S = 0.5 * (DLc + np.roll(DLc, 1, 0))
-    DL_N = 0.5 * (DLc + np.roll(DLc, -1, 0))
+    # 分子（向量形式）：液侧驱动 - 固侧抵消
+    num_x = DL * dCLdx - DS * dCSdx
+    num_y = DL * dCLdy - DS * dCSdy
 
-    DS_W = 0.5 * (DSc + np.roll(DSc, 1, 1))
-    DS_E = 0.5 * (DSc + np.roll(DSc, -1, 1))
-    DS_S = 0.5 * (DSc + np.roll(DSc, 1, 0))
-    DS_N = 0.5 * (DSc + np.roll(DSc, -1, 0))
-
-    # --- 分母与保护 ---
+    # 分母（带稳健保护）
     den = (1.0 - k0) * CLs
     eps = max(1e-12, float(np.nanmax(np.abs(den[mask_int]))) * 1e-12 + 1e-18)
-    den_safe = np.where(np.abs(den) < eps, np.sign(den) * eps, den)
+    sign = np.where(den >= 0.0, 1.0, -1.0)
+    den_safe = np.where(np.abs(den) < eps, sign * eps, den)
 
-    # --- x 向：两侧面通量之和 / (dx * den) ---
-    num_x = (
-        DS_W * (CSs - CS_W) * fs_W
-        + DS_E * (CSs - CS_E) * fs_E
-        + DL_W * (CLs - CL_W) * a_W
-        + DL_E * (CLs - CL_E) * a_E
-    )
-    Vx_loc = num_x / (dx * den_safe)
-
-    # --- y 向 ---
-    num_y = (
-        DS_S * (CSs - CS_S) * fs_S
-        + DS_N * (CSs - CS_N) * fs_N
-        + DL_S * (CLs - CL_S) * a_S
-        + DL_N * (CLs - CL_N) * a_N
-    )
-    Vy_loc = num_y / (dy * den_safe)
-
-    # 仅在界面带赋值
-    Vx[mask_int] = Vx_loc[mask_int]
-    Vy[mask_int] = Vy_loc[mask_int]
+    # 只在界面带赋值
+    Vx = np.zeros_like(CL, dtype=float)
+    Vy = np.zeros_like(CL, dtype=float)
+    Vx[mask_int] = num_x[mask_int] / den_safe[mask_int]
+    Vy[mask_int] = num_y[mask_int] / den_safe[mask_int]
 
     Vn = Vx * nx + Vy * ny
     return Vn, Vx, Vy

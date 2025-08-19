@@ -9,13 +9,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any
-import logging
 import numpy as np
 
 from .anisotropy import compute_normals_and_curvature, anisotropy_factor
 from .velocity import compute_velocity
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -88,13 +85,13 @@ def compute_interface_fields(
     ny = zeros()
     kappa = zeros()
     # 中间变量存取
-    nx_, ny_, kappa_ = compute_normals_and_curvature(
-        grid.fs, grid.dx, grid.dy, smooth=curv_smooth
-    )
+    nx_, ny_, kappa_ = compute_normals_and_curvature(grid.fs, grid.dx, grid.dy)
     # 仅赋值中间变量
     nx[mask_int] = nx_[mask_int]
     ny[mask_int] = ny_[mask_int]
     kappa[mask_int] = kappa_[mask_int]
+
+    nx, ny, kappa = -nx, -ny, -kappa
 
     # 2) 各向异性因子 f(phi, theta)
     ani = np.ones(shape, dtype=float)
@@ -108,7 +105,6 @@ def compute_interface_fields(
 
     # 避免 mL = 0 数值问题
     if abs(mL) < 1e-20:
-        logger.warning("mL 太小，已夹到 1e-20 以避免除零")
         mL = -1e-20
 
     T = grid.T
@@ -118,21 +114,18 @@ def compute_interface_fields(
     CSs[mask_int] = k0 * CLs[mask_int]
 
     # 4) 计算界面移动速度 Stefan守恒
-    Vn, Vx, Vy = compute_velocity(cfg_if, mask_int, nx, ny)
+    Vn, Vx, Vy = compute_velocity(
+        cfg_if,
+        masks["mask_int"],
+        nx,
+        ny,
+        grid=grid,
+        CLs=CLs,
+        CSs=CSs,
+    )
 
     fields = IfaceFields(
         Vn=Vn, Vx=Vx, Vy=Vy, nx=nx, ny=ny, kappa=kappa, ani=ani, CLs=CLs, CSs=CSs
     )
 
-    # 记录一些诊断信息
-    n_active = int(np.count_nonzero(mask_int))
-    logger.info(
-        "Iface: active=%d, TL_eq=%.3f, C0=%.3g, mL=%.3g, Gamma=%.3g, eps=%.3g",
-        n_active,
-        TL_eq,
-        C0,
-        mL,
-        Gamma,
-        eps,
-    )
     return fields

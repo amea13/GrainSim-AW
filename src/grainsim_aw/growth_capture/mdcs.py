@@ -73,6 +73,9 @@ def advance_no_capture(
     delta_fs = np.minimum(delta_fs, 1.0 - fs)
     fs += delta_fs  # 原地更新
 
+    # 如果界面带fs的更新后为=1.0，即已经完全变成固相，则将其CL设置为0
+    grid.CL[fs == 1.0] = 0
+
     # 5) 由 Δf_s 更新 L_dia（仅几何，不做捕捉）
     update_Ldia(grid, delta_fs, grid.theta)
 
