@@ -1,7 +1,7 @@
 {
     "domain": {
-        "nx": 64,
-        "ny": 64,
+        "nx": 201,
+        "ny": 201,
         "dx": 1e-6,
         "dy": 1e-6,
         "nghost": 3,
@@ -25,7 +25,12 @@
     "init": {
         "mode": "single_center",
         "theta_deg": 0,
-        "seed_fs": 0.01
+        "random_theta": false,
+        "N": 10,
+        "edge": "north",
+        "count": 8,
+        "eps_over_edge": 0.02,
+        "capture_seed_fs": 0.005
     },
     "physics": {
         "interface": {

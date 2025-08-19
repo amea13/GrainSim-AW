@@ -55,13 +55,10 @@ def _cell_center_abs(
 
 def _map_abs_point_to_index(
     x: float, y: float, dx: float, dy: float, i0: float, j0: float
-) -> Tuple[int, int]:
-    """
-    将绝对坐标 (x,y) 映射回网格索引 (i,j)
-    公式：j = floor(x/dx + j0 - 0.5), i = floor(y/dy + i0 - 0.5)
-    """
-    j = int(np.floor(x / dx + j0 - 0.5))
-    i = int(np.floor(y / dy + i0 - 0.5))
+) -> tuple[int, int]:
+    # 反算到网格索引：边界位于 ((j-j0))*dx 与 ((j-j0)+1)*dx 之间
+    j = int(np.floor(x / dx + j0))
+    i = int(np.floor(y / dy + i0))
     return i, j
 
 

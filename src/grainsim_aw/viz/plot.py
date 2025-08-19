@@ -3,6 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 
+plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False  # 负号正常显示
+
 
 # 查找最新快照
 def find_latest_snapshot(out_dir: Path) -> Path:

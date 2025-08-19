@@ -11,6 +11,9 @@ from matplotlib.colorbar import Colorbar
 from matplotlib.colors import ListedColormap, NoNorm
 from matplotlib.figure import Figure
 
+plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False  # 负号正常显示
+
 
 class LivePlotter:
     """

@@ -8,9 +8,7 @@ from ..core.grid import (
     classify_phases,
 )  # 管理计算网格，包括创建和更新边界ghost cells
 from ..nucleation import apply as step_nucleation  # Thevoz方法异质形核
-from ..nucleation import (
-    initialize as seed_initialize,
-)  # 手动初始化晶核
+from ..nucleation import seed_initialize
 from ..interface import compute_interface_fields  # 计算界面相关的场
 from ..growth_capture import capture_pass, advance_no_capture  # 处理MDCS捕获
 from ..multiphysics import solute_advance, total_solute_mass  # 溶质场偏微分方程求解
@@ -20,6 +18,10 @@ from ..viz.liveplot import LivePlotter  # 实时可视化
 
 # 创建一个日志记录器
 logger = logging.getLogger(__name__)
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
+logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
 
 # 模拟器类：负责初始化、运行和实时可视化

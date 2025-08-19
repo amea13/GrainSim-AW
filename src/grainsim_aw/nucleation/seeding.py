@@ -1,124 +1,242 @@
+# -*- coding: utf-8 -*-
 """
-可控初始种子（一次性初始化）：
-- single_center：在核心区中心放 1 个种子（可设取向、fs）
-- random:       在核心区随机放 N 个种子（均匀抽样）
-- edge_line:    在某条边上按间距放一排种子
-与 Nucleation.apply(逐步形核)独立；只在开局调用一次。
+seeding.py — 可控初始种子（一次性初始化）
+支持:
+- single_center : 在 core 几何中心放 1 个种子
+- random        : 在 core 内随机放 N 个种子
+- edge_line     : 在指定边上均匀放 count 个种子
+
+每个种子：fs=1, L_dia=Lmax(theta), ecc=(0,0)，并按取向用“四顶点”一次性感染邻元为界面元。
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Tuple
-import logging
+from typing import Dict, Any, List, Tuple
 import numpy as np
 
-logger = logging.getLogger(__name__)
+# 依赖 Grid 的工具
+from grainsim_aw.core.grid import update_ghosts
 
 
-def _core_center_indices(grid) -> tuple[int, int]:
-    """返回 core 区中心的（绝对）索引，而不是相对索引。"""
-    g = grid.nghost
-    cy = g + grid.ny // 2
-    cx = g + grid.nx // 2
-    return cy, cx
+# ---------- 基本几何工具（绝对坐标以 core 几何中心为原点） ----------
 
 
-def _place_seed(grid, iy: int, ix: int, theta_rad: float, seed_fs: float, gid: int):
-    """在 core 内放置一个种子；坐标是绝对索引。"""
-    g = grid.nghost
-    # core 的合法范围：[g, g+ny) × [g, g+nx)
-    assert g <= iy < g + grid.ny and g <= ix < g + grid.nx, "seed 不在 core 内"
-    grid.fs[iy, ix] = max(grid.fs[iy, ix], seed_fs)
-    grid.grain_id[iy, ix] = gid
-    grid.theta[iy, ix] = np.mod(theta_rad, 2.0 * np.pi)
+def _core_center_indices(grid) -> Tuple[float, float]:
+    g = int(grid.nghost)
+    return (g + grid.ny / 2.0, g + grid.nx / 2.0)  # (i0, j0)
 
 
-def initialize(grid, rng: np.random.Generator, cfg_init: Dict[str, Any]) -> int:
+def _cell_center_abs(
+    i: int, j: int, dx: float, dy: float, i0: float, j0: float
+) -> Tuple[float, float]:
+    x = ((j - j0) + 0.5) * dx
+    y = ((i - i0) + 0.5) * dy
+    return x, y
+
+
+def _map_abs_point_to_index(
+    x: float, y: float, dx: float, dy: float, i0: float, j0: float
+) -> tuple[int, int]:
+    # 反算到网格索引：边界位于 ((j-j0))*dx 与 ((j-j0)+1)*dx 之间
+    j = int(np.floor(x / dx + j0))
+    i = int(np.floor(y / dy + i0))
+    return i, j
+
+
+def _in_core(i: int, j: int, g: int, Ny: int, Nx: int) -> bool:
+    return (g <= i < Ny - g) and (g <= j < Nx - g)
+
+
+def _Ldia_max(theta: float, dx: float) -> float:
+    s = abs(np.sin(theta))
+    c = abs(np.cos(theta))
+    return dx / max(s, c, 1e-12)
+
+
+# ---------- 某个种子的“一次性感染”实现（按取向四顶点） ----------
+
+
+def _infect_ring_by_vertices(
+    grid, i0: int, j0: int, theta0: float, eps_over: float, fs_child: float
+) -> int:
     """
-    根据 cfg_init 放置初始种子；返回放置的数量。
-    cfg_init:
-      mode: "single_center" | "random" | "edge_line"
-      seed_fs: float (默认 1e-3)
-      theta_deg: float（单中心/整排统一取向；也可填 theta_rad）
-      count: int（random 模式数量）
-      edge: "north"|"south"|"west"|"east"（edge_line）
-      spacing: int（edge_line 的间隔，>=1）
-      overwrite: bool（若 True 允许覆盖已有 grain_id；默认 False）
+    以 (i0,j0) 为父（已 fs=1），用 L_seed=(0.5+eps_over)*Lmax 的四个顶点感染邻元为界面。
+    返回感染成功的邻元个数。
     """
-    mode = str(cfg_init.get("mode", "single_center")).lower()
-    seed_fs = float(cfg_init.get("seed_fs", 1e-3))
-    overwrite = bool(cfg_init.get("overwrite", False))
+    fs = grid.fs
+    gid_a = grid.grain_id
+    th = grid.theta
+    ecc_x = grid.ecc_x
+    ecc_y = grid.ecc_y
+    Ldia = grid.L_dia
 
-    # 取向：优先 theta_rad，其次 theta_deg
-    if "theta_rad" in cfg_init:
-        theta_rad = float(cfg_init["theta_rad"])
-    else:
-        theta_deg = float(cfg_init.get("theta_deg", 0.0))
-        theta_rad = theta_deg * np.pi / 180.0
+    dx = float(grid.dx)
+    dy = float(grid.dy)
+    g = int(grid.nghost)
+    Ny, Nx = fs.shape
+    i0c, j0c = _core_center_indices(grid)
 
-    ys, xs = grid.core
-    core_h, core_w = ys.stop - ys.start, xs.stop - xs.start
+    # 父几何中心（绝对坐标）
+    xC, yC = _cell_center_abs(i0, j0, dx, dy, i0c, j0c)
 
-    # 当前最大 grain_id，新的从此基础上递增
-    current_max = (
-        int(np.max(grid.grain_id[ys, xs])) if np.any(grid.grain_id[ys, xs]) else 0
-    )
-    next_gid = current_max + 1
+    # 四顶点（绝对坐标）
+    Lmax = _Ldia_max(theta0, dx)
+    Lseed = (0.5 + eps_over) * Lmax
+    ct, st = np.cos(theta0), np.sin(theta0)
+    ux, uy = ct, st
+    vx, vy = -st, ct
+    verts = [
+        (xC + Lseed * ux, yC + Lseed * uy),  # +u
+        (xC + Lseed * vx, yC + Lseed * vy),  # +v
+        (xC - Lseed * ux, yC - Lseed * uy),  # -u
+        (xC - Lseed * vx, yC - Lseed * vy),  # -v
+    ]
 
     placed = 0
     tau_liq = 1e-12
+    for xv, yv in verts:
+        ci, cj = _map_abs_point_to_index(xv, yv, dx, dy, i0c, j0c)
+        if not _in_core(ci, cj, g, Ny, Nx):
+            continue
+        if fs[ci, cj] > tau_liq:  # 仅感染液相
+            continue
+
+        # 继承晶粒属性
+        gid_a[ci, cj] = gid_a[i0, j0]
+        th[ci, cj] = th[i0, j0]
+
+        # 偏心中心：设为顶点绝对坐标
+        xc, yc = _cell_center_abs(ci, cj, dx, dy, i0c, j0c)
+        ecc_x[ci, cj] = xv - xc
+        ecc_y[ci, cj] = yv - yc
+
+        # 初始化界面几何
+        fs[ci, cj] = max(fs[ci, cj], fs_child)
+        Ldia[ci, cj] = max(Ldia[ci, cj], fs[ci, cj] * _Ldia_max(th[ci, cj], dx))
+        placed += 1
+
+    return placed
+
+
+# ---------- 主入口：seed_initialize ----------
+
+
+def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
+    """
+    可控初始种子（一次性初始化）。
+    配置示例:
+    {
+        "mode": "single_center" | "random" | "edge_line",
+        "theta_deg": 0,               # 可选：固定角（所有种子共用）；若缺省且 random_theta=True 则随机取向
+        "random_theta": false,        # 可选：是否随机取向（均匀 [0, 2π)）
+        "N": 10,                      # mode=="random" 时的数量
+        "edge": "north",              # mode=="edge_line" 的边: "north"/"south"/"west"/"east"
+        "count": 8,                   # mode=="edge_line" 的种子个数
+        "eps_over_edge": 0.02,        # 顶点越过比例 ε（用于一次性感染）
+        "capture_seed_fs": 0.005      # 新界面元初始 fs
+    }
+    返回：成功放置的“核心”种子数（非感染邻元数量）。
+    """
+    mode = str(cfg.get("mode", "single_center")).lower()
+    N = int(cfg.get("N", 1))
+    edge = str(cfg.get("edge", "north")).lower()
+    eps_over = float(cfg.get("eps_over_edge", 0.02))
+    fs_child = float(cfg.get("capture_seed_fs", 0.005))
+
+    # 取向：固定角或随机
+    if cfg.get("random_theta", False):
+        # 每个种子独立随机取向
+        def sample_theta() -> float:
+            return float(rng.uniform(0.0, 2.0 * np.pi))
+
+    else:
+        # 固定角（默认 0°）
+        theta_rad = float(np.deg2rad(cfg.get("theta_deg", 0.0)))
+
+        def sample_theta() -> float:
+            return theta_rad
+
+    fs = grid.fs
+    gid_a = grid.grain_id
+    th = grid.theta
+    ecc_x = grid.ecc_x
+    ecc_y = grid.ecc_y
+    Ldia = grid.L_dia
+
+    dx = float(grid.dx)
+    dy = float(grid.dy)
+    g = int(grid.nghost)
+    Ny, Nx = fs.shape
+    core_y = range(g, Ny - g)
+    core_x = range(g, Nx - g)
+
+    # 生成种子坐标列表
+    seeds: List[Tuple[int, int]] = []
 
     if mode == "single_center":
-        cy, cx = _core_center_indices(grid)
-        if (not overwrite) and (
-            grid.grain_id[cy, cx] != 0 or grid.fs[cy, cx] >= tau_liq
-        ):
-            logger.info("Seeding(single_center): 中心已有占用，跳过。")
-            return 0
-        _place_seed(grid, cy, cx, theta_rad, seed_fs, next_gid)
-        placed = 1
+        i0 = g + grid.ny // 2
+        j0 = g + grid.nx // 2
+        seeds.append((i0, j0))
 
     elif mode == "random":
-        count = int(cfg_init.get("count", 10))
-        # 可候选：core ∩ 液相且未分配 id
-        mask_liq = (grid.fs[ys, xs] < tau_liq) & (grid.grain_id[ys, xs] == 0)
-        candidates = np.transpose(np.nonzero(mask_liq))
-        if candidates.size == 0:
-            logger.info("Seeding(random): 无可用液相候选。")
-            return 0
-        count = min(count, candidates.shape[0])
-        idx = rng.choice(candidates.shape[0], size=count, replace=False)
-        for k, (iy_rel, ix_rel) in enumerate(candidates[idx]):
-            iy = ys.start + int(iy_rel)
-            ix = xs.start + int(ix_rel)
-            _place_seed(grid, iy, ix, theta_rad, seed_fs, next_gid + k)
-        placed = count
+        # 在 core 内均匀抽样 N 个不重复位置
+        total = grid.ny * grid.nx
+        if N > total:
+            N = total
+        # 将 core 区展平采样，再还原 (i,j)
+        flat_idx = rng.choice(total, size=N, replace=False)
+        for k in flat_idx:
+            di = int(k // grid.nx)
+            dj = int(k % grid.nx)
+            seeds.append((g + di, g + dj))
 
     elif mode == "edge_line":
-        edge = str(cfg_init.get("edge", "north")).lower()
-        spacing = max(1, int(cfg_init.get("spacing", 4)))
-        if edge in ("north", "south"):
-            j_indices = np.arange(xs.start, xs.stop, spacing, dtype=int)
-            i = ys.start if edge == "north" else ys.stop - 1
-            for k, j in enumerate(j_indices):
-                if overwrite or (grid.grain_id[i, j] == 0 and grid.fs[i, j] < tau_liq):
-                    _place_seed(grid, i, j, theta_rad, seed_fs, next_gid + placed)
-                    placed += 1
-        else:  # "west" | "east"
-            i_indices = np.arange(ys.start, ys.stop, spacing, dtype=int)
-            j = xs.start if edge == "west" else xs.stop - 1
-            for k, i in enumerate(i_indices):
-                if overwrite or (grid.grain_id[i, j] == 0 and grid.fs[i, j] < tau_liq):
-                    _place_seed(grid, i, j, theta_rad, seed_fs, next_gid + placed)
-                    placed += 1
+        # 在指定边上均匀布点（count 个），避开 ghost
+        count = max(1, int(cfg.get("count", 1)))
+        if edge == "north":
+            i = g
+            js = np.linspace(g, g + grid.nx - 1, count, dtype=int)
+            seeds.extend((i, j) for j in js)
+        elif edge == "south":
+            i = g + grid.ny - 1
+            js = np.linspace(g, g + grid.nx - 1, count, dtype=int)
+            seeds.extend((i, j) for j in js)
+        elif edge == "west":
+            j = g
+            is_ = np.linspace(g, g + grid.ny - 1, count, dtype=int)
+            seeds.extend((i, j) for i in is_)
+        elif edge == "east":
+            j = g + grid.nx - 1
+            is_ = np.linspace(g, g + grid.ny - 1, count, dtype=int)
+            seeds.extend((i, j) for i in is_)
+        else:
+            raise ValueError(f"edge_line.edge 不支持: {edge}")
     else:
-        logger.warning("Seeding: 未知 mode=%s，跳过。", mode)
-        return 0
+        raise ValueError(f"init.mode 不支持: {mode}")
 
-    logger.info(
-        "Seeding(%s): placed=%d, seed_fs=%.3g, theta=%.3f rad",
-        mode,
-        placed,
-        seed_fs,
-        theta_rad,
-    )
+    # 逐个落子
+    placed = 0
+    next_gid = int(gid_a.max()) + 1
+    for i0, j0 in seeds:
+        # 避免覆盖已有非液相（极少见于重复初始化）
+        if fs[i0, j0] > 1e-12:
+            continue
+
+        theta0 = sample_theta()
+
+        # 1) 核心元：直接固相
+        gid_a[i0, j0] = next_gid
+        th[i0, j0] = theta0
+        fs[i0, j0] = 1.0
+        ecc_x[i0, j0] = 0.0
+        ecc_y[i0, j0] = 0.0
+        Ldia[i0, j0] = _Ldia_max(theta0, dx)
+
+        # 2) 一次性感染：按取向四顶点感染（一级或二级邻胞，取决于 θ）
+        _infect_ring_by_vertices(grid, i0, j0, theta0, eps_over, fs_child)
+
+        placed += 1
+        next_gid += 1
+
+    # 更新 ghost（顶点感染已修改 fs/几何）
+    update_ghosts(grid)
     return placed
