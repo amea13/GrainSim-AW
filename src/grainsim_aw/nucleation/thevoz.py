@@ -19,7 +19,7 @@ def apply(
     masks: Dict[str, np.ndarray],
 ) -> None:
     """
-    形核入口（收紧接口版）
+    形核入口
     参数
     ----
     grid : Grid

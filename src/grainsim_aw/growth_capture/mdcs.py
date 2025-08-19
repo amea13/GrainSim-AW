@@ -1,77 +1,81 @@
+# src/grainsim_aw/growth_capture/mdcs.py
+
 from __future__ import annotations
 from typing import Dict, Any
-import logging
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from .kernels import centroid_normal
+from .geometry import L_n, shape_factor_GF, update_Ldia, vertices
+from .capture_rules import apply as apply_capture_rules
 
 
-def step(
-    grid, fields, cfg_mdcs: Dict[str, Any], cfg_orient: Dict[str, Any], dt: float, masks
-):
+def capture_pass(
+    grid,
+    masks: Dict[str, np.ndarray],
+    cfg: Dict[str, Any],
+    parent_mask: np.ndarray | None = None,
+) -> None:
     """
-    最小推进：在界面元胞上令 Δfs = (gf_over_ln) * Vn * dt，并做 4 邻域捕捉：
-      - fs 跨过阈值的界面胞，会给其 4 邻的液相元胞一个很小的 seed_fs（并继承 grain_id/theta）。
-    这不是正式 MDCS，只是可视化“开始长”的第一步。
+    仅执行一次“偏心正方形捕捉”。不计算 Δfs，不更新 L_dia。
+    - parent_mask: 可选 “父界面胞集合”。若为 None，默认用 masks['mask_int']。
+      典型用法：parent_mask = masks['mask_int'] | seeds_mask  （把本步新核也当父胞）
+    - 本函数内部不会修改 masks；调用方应在捕捉后统一重算 masks。
     """
-    ys, xs = grid.core
+    if parent_mask is None:
+        parent_mask = masks["mask_int"]
+
+    # 只为父胞生成顶点。非父胞位置将被 vertices 置为 NaN，apply 会自动跳过
+    verts = vertices(grid, parent_mask)
+
+    # 构造“捕捉用掩码”：强制用 parent_mask 作为父界面集合
+    masks_cap = dict(masks)
+    masks_cap["mask_int"] = parent_mask
+
+    # 这三个阵当前 apply 不依赖（df_parent 仅用于平局破），给零阵即可
+    Z = np.zeros_like(grid.fs)
+    apply_capture_rules(grid, verts, Z, Z, Z, masks_cap, cfg)
+    # 注意：此处已原地修改 grid.fs / grain_id / theta / ecc / L_dia（仅初始化新界面元）
+
+
+def advance_no_capture(
+    grid,
+    fields,  # IfaceFields：至少含 Vn
+    cfg: Dict[str, Any],
+    dt: float,
+    masks: Dict[str, np.ndarray],
+) -> np.ndarray:
+    """
+    仅推进 Δfs 与 L_dia（不执行捕捉）。
+    返回 fs_dot（供溶质源项用）。
+    需要调用方在进入本函数前已 update_ghosts(grid)，因为圆核质心法依赖 ghost。
+    """
     fs = grid.fs
-    gid = grid.grain_id
-    theta = grid.theta
-
     Vn = fields.Vn
-    mask_int = masks.get("mask_int", np.zeros_like(fs, bool))
-    mask_liq = masks.get("mask_liq", np.zeros_like(fs, bool))
+    dx, dy = float(grid.dx), float(grid.dy)
+    mask_int = masks["mask_int"]
 
-    # 参数
-    gf_over_ln = float(cfg_mdcs.get("gf_over_ln", 1.0))  # 近似 GF / L_n
-    capture_threshold = float(cfg_mdcs.get("fs_capture_threshold", 0.6))
-    seed_fs = float(cfg_mdcs.get("capture_seed_fs", 1e-3))
-    tau_liq = 1e-12
+    # 1) 圆核质心法：几何法向（用于几何长度与 GF）
+    nx_c, ny_c = centroid_normal(fs)
 
-    # —— 1) 在界面上增加 fs —— #
-    Δfs = gf_over_ln * Vn * dt
-    Δfs = np.where(mask_int, Δfs, 0.0)
+    # 2) 法向 -> 界面穿越长度 L_n
+    Ln = L_n(nx_c, ny_c, dx, dy)
 
-    before = fs[ys, xs].copy()
-    fs[ys, xs] = np.clip(fs[ys, xs] + Δfs[ys, xs], 0.0, 1.0)
-    sum_dfs = float(np.sum(fs[ys, xs] - before))
+    # 3) 一/二级邻胞规则 -> 形状因子 GF
+    GF = shape_factor_GF(fs, nx_c, ny_c, masks)
 
-    # —— 2) 触发捕捉：跨过阈值的格点作为“源” —— #
-    crossed = (before < capture_threshold) & (fs[ys, xs] >= capture_threshold)
-
-    captures = 0
-    # 上
-    mask_up = (
-        crossed[1:, :] & (mask_liq[ys, xs][:-1, :]) & (fs[ys, xs][:-1, :] < tau_liq)
+    # 4) Δf_s（仅界面带，单向增长，不超过剩余空间）
+    eps = 1e-30
+    delta_fs = np.zeros_like(fs, dtype=float)
+    delta_fs[mask_int] = (
+        GF[mask_int] * Vn[mask_int] * dt / np.maximum(Ln[mask_int], eps)
     )
-    fs[ys, xs][:-1, :][mask_up] = np.maximum(fs[ys, xs][:-1, :][mask_up], seed_fs)
-    gid[ys, xs][:-1, :][mask_up] = gid[ys, xs][1:, :][mask_up]
-    theta[ys, xs][:-1, :][mask_up] = theta[ys, xs][1:, :][mask_up]
-    captures += int(np.count_nonzero(mask_up))
-    # 下
-    mask_dn = (
-        crossed[:-1, :] & (mask_liq[ys, xs][1:, :]) & (fs[ys, xs][1:, :] < tau_liq)
-    )
-    fs[ys, xs][1:, :][mask_dn] = np.maximum(fs[ys, xs][1:, :][mask_dn], seed_fs)
-    gid[ys, xs][1:, :][mask_dn] = gid[ys, xs][:-1, :][mask_dn]
-    theta[ys, xs][1:, :][mask_dn] = theta[ys, xs][:-1, :][mask_dn]
-    captures += int(np.count_nonzero(mask_dn))
-    # 左
-    mask_lt = (
-        crossed[:, 1:] & (mask_liq[ys, xs][:, :-1]) & (fs[ys, xs][:, :-1] < tau_liq)
-    )
-    fs[ys, xs][:, :-1][mask_lt] = np.maximum(fs[ys, xs][:, :-1][mask_lt], seed_fs)
-    gid[ys, xs][:, :-1][mask_lt] = gid[ys, xs][:, 1:][mask_lt]
-    theta[ys, xs][:, :-1][mask_lt] = theta[ys, xs][:, 1:][mask_lt]
-    captures += int(np.count_nonzero(mask_lt))
-    # 右
-    mask_rt = (
-        crossed[:, :-1] & (mask_liq[ys, xs][:, 1:]) & (fs[ys, xs][:, 1:] < tau_liq)
-    )
-    fs[ys, xs][:, 1:][mask_rt] = np.maximum(fs[ys, xs][:, 1:][mask_rt], seed_fs)
-    gid[ys, xs][:, 1:][mask_rt] = gid[ys, xs][:, :-1][mask_rt]
-    theta[ys, xs][:, 1:][mask_rt] = theta[ys, xs][:, :-1][mask_rt]
-    captures += int(np.count_nonzero(mask_rt))
+    np.maximum(delta_fs, 0.0, out=delta_fs)
+    delta_fs = np.minimum(delta_fs, 1.0 - fs)
+    fs += delta_fs  # 原地更新
 
-    logger.info("MDCS(min): sum(Δfs)=%.3e, captures=%d", sum_dfs, captures)
+    # 5) 由 Δf_s 更新 L_dia（仅几何，不做捕捉）
+    update_Ldia(grid, delta_fs, grid.theta)
+
+    # 输出给溶质源项
+    fs_dot = delta_fs / dt
+    return fs_dot

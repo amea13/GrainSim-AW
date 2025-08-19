@@ -13,6 +13,8 @@ class Grid:
     theta: np.ndarray  # 晶粒取向角，float64
     L_dia: np.ndarray  # 偏心正方形“半对角线”长度，float64
     T: np.ndarray  # 温度场 [K]，float64（v0.2起持久字段）
+    ecc_x: np.ndarray  # 偏心正方形中心相对本元胞几何中心的 x 偏移 [m]
+    ecc_y: np.ndarray  # 同上 y 偏移 [m]
 
     # —— 网格几何 ——
     ny: int
@@ -61,6 +63,8 @@ def create_grid(domain_cfg: dict) -> Grid:
     th = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 取向角
     Ldia = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     T = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 温度场
+    ecc_x = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+    ecc_y = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
 
     return Grid(
         fs=fs,
@@ -75,6 +79,8 @@ def create_grid(domain_cfg: dict) -> Grid:
         dx=dx,
         dy=dy,
         nghost=g,
+        ecc_x=ecc_x,
+        ecc_y=ecc_y,
     )
 
 

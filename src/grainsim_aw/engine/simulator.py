@@ -7,12 +7,12 @@ from ..core.grid import (
     update_ghosts,
     classify_phases,
 )  # 管理计算网格，包括创建和更新边界ghost cells
-from ..nucleation import apply as nucl_apply  # Thevoz方法异质形核
+from ..nucleation import apply as step_nucleation  # Thevoz方法异质形核
 from ..nucleation import (
     initialize as seed_initialize,
 )  # 手动初始化晶核
 from ..interface import compute_interface_fields  # 计算界面相关的场
-from ..growth_capture import step as mdcs_step  # 处理MDCS捕获
+from ..growth_capture import capture_pass, advance_no_capture  # 处理MDCS捕获
 from ..multiphysics import solute_advance, total_solute_mass  # 溶质场偏微分方程求解
 from ..multiphysics import sample_T  # 温度场加载
 from ..io.writer import prepare_out, write_meta, snapshot  # 数据输出
@@ -57,46 +57,53 @@ class Simulator:
                 step += 1
                 t += dt
 
-                # 预处理：更新网格边界条件
+                # A) 先更新 ghosts & 掩码
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
-
-                # 温度场更新
-                self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
-
-                # 确定固相、液相、界面区域 生成掩膜
                 masks = classify_phases(self.grid.fs, self.grid.nghost)
 
-                # 处理异质形核
-                nucl_apply(self.grid, self.rng, self.cfg.get("nucleation", {}), masks)
-                logger.info("Nucleation done (stub)")
+                # B) Thevoz 形核：返回本步新核掩码（seeds_mask），并在 grid 上把核元设置好：
+                #    fs=1, L_dia=Lmax(theta), ecc=0, grain_id/theta 赋值
+                seeds_mask = step_nucleation(
+                    self.grid, self.rng, self.cfg.get("nucleation", {}), masks
+                )
 
-                # 计算界面相关的物理量 主要是Vn
+                # C) 全局“捕捉优先”——把“旧界面带 ∪ 新核”统一作为父胞执行一次捕捉
+                seeds_mask = seeds_mask  # 你的 thevoz 返回值
+                if seeds_mask is None:
+                    parent_mask = masks["mask_int"]
+                else:
+                    parent_mask = (
+                        masks["mask_int"] | seeds_mask
+                    )  # 两者都是 bool ndarray
+                capture_pass(
+                    self.grid,
+                    masks,
+                    self.cfg["physics"]["mdcs"],
+                    parent_mask=parent_mask,
+                )
+
+                # D) 捕捉后，ghosts 与 masks 已过期；立刻重算（供 Vn 与推进使用）
+                update_ghosts(self.grid, self.cfg["domain"]["bc"])
+                masks = classify_phases(self.grid.fs, self.grid.nghost)
+
+                # E) 计算界面热力学平衡（Vn、nx,ny、κ、各向异性、C* 等）
                 fields = compute_interface_fields(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),
                     self.cfg.get("physics", {}).get("orientation", {}),
                     masks,
                 )
-                logger.info("Interface fields computed (stub)")
 
-                # 保存旧固相分数场以计算变化率
-                fs_old = self.grid.fs.copy()
-
-                # 更新界面胞固相率与偏心正方形半对角线长度
-                mdcs_step(
+                # F) 仅推进 Δfs / L_dia
+                fs_dot = advance_no_capture(
                     self.grid,
                     fields,
                     self.cfg.get("physics", {}).get("mdcs", {}),
-                    self.cfg.get("physics", {}).get("orientation", {}),
                     dt,
                     masks,
                 )
-                logger.info("MDCS done (stub)")
 
-                # 计算固相分数场变化率
-                fs_dot = (self.grid.fs - fs_old) / dt
-
-                # 处理溶质场
+                # G) 溶质/温度更新（使用最新 fs 与 fs_dot）
                 solute_advance(
                     self.grid,
                     self.cfg.get("physics", {}).get("solute", {}),
@@ -104,11 +111,9 @@ class Simulator:
                     masks,
                     fs_dot=fs_dot,
                 )
-                logger.info("solute_advance done (stub)")
-
+                self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
                 # 计算总溶质质量
                 M = total_solute_mass(self.grid)
-                logger.info(f"Total solute mass (diag): {M:.6e}")
 
                 # 后处理
                 # 保存快照
