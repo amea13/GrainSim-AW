@@ -7,28 +7,6 @@
     "nghost": 3,
     "bc": "neumann0"
   },
-  "physics": {
-    "interface": {
-      "Vn_const": 0.05
-    },
-    "orientation": {
-      "fold": 4,
-      "N_theta": 48
-    },
-    "mdcs": {
-      "gf_over_ln": 1.0,
-      "fs_capture_threshold": 0.6,
-      "capture_seed_fs": 0.005
-    },
-    "solute": {}
-  },
-  "nucleation": {
-    "dT_threshold": 5.0,
-    "prob_per_cell": 0,
-    "seed_fs": 0.001,
-    "fold": 4,
-    "N_theta": 48
-  },
   "time": {
     "dt": 0.001,
     "t_end": 0.01,
@@ -48,6 +26,35 @@
     "mode": "single_center",
     "theta_deg": 0,
     "seed_fs": 0.01
+  },
+  "physics": {
+    "interface": {
+      "Vn_const": 0.05,
+      "TL_eq": 933.47,
+      "C0": 0.0,
+      "mL": -1.0,
+      "Gamma": 2e-07,
+      "k0": 1.0,
+      "eps_anis": 0.02,
+      "curv_smooth": 1
+    },
+    "orientation": {
+      "fold": 4,
+      "N_theta": 48
+    },
+    "mdcs": {
+      "gf_over_ln": 1.0,
+      "fs_capture_threshold": 0.6,
+      "capture_seed_fs": 0.005
+    },
+    "solute": {}
+  },
+  "nucleation": {
+    "dT_threshold": 5.0,
+    "prob_per_cell": 0,
+    "seed_fs": 0.001,
+    "fold": 4,
+    "N_theta": 48
   },
   "viz": {
     "live": {

@@ -10,7 +10,7 @@ class Grid:
     CL: np.ndarray  # 液相体平均浓度，float64
     CS: np.ndarray  # 固相体平均浓度，float64
     grain_id: np.ndarray  # 晶粒 ID，int32
-    theta: np.ndarray  # 晶粒取向角（弧度，规范到[0,2π)），float64
+    theta: np.ndarray  # 晶粒取向角，float64
     L_dia: np.ndarray  # 偏心正方形“半对角线”长度，float64
     T: np.ndarray  # 温度场 [K]，float64（v0.2起持久字段）
 

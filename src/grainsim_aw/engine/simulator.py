@@ -70,7 +70,7 @@ class Simulator:
                 nucl_apply(self.grid, self.rng, self.cfg.get("nucleation", {}), masks)
                 logger.info("Nucleation done (stub)")
 
-                # 计算界面相关的物理量 主要是
+                # 计算界面相关的物理量 主要是Vn
                 fields = compute_interface_fields(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),

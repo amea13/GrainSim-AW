@@ -27,6 +27,8 @@ This module provides a single entry point: solute_advance(grid, cfg, dt, masks, 
 from dataclasses import dataclass
 import numpy as np
 from typing import Dict, Tuple
+from ..core import Dl_from_T, Ds_from_T
+
 
 __all__ = ["solute_advance"]
 
@@ -34,16 +36,6 @@ __all__ = ["solute_advance"]
 def _k_const(cfg: Dict) -> float:
     # default constant k
     return float(cfg.get("k", 0.34))
-
-
-def _Dl_from_T(T: np.ndarray) -> np.ndarray:
-    # liquid diffusivity: 7.67e-6 * exp(-12749.58 / T)
-    return 7.67e-6 * np.exp(-12749.58 / np.clip(T, 1.0, None))
-
-
-def _Ds_from_T(T: np.ndarray) -> np.ndarray:
-    # solid diffusivity: 7.61e-6 * exp(-16185.23 / T)
-    return 7.61e-6 * np.exp(-16185.23 / np.clip(T, 1.0, None))
 
 
 def _harmonic(a: np.ndarray, b: np.ndarray, eps: float = 1e-300) -> np.ndarray:
@@ -238,8 +230,8 @@ def solute_advance(
     CS_old = grid.CS.copy()
 
     # diffusivities
-    DL = _Dl_from_T(T)
-    DS = _Ds_from_T(T)
+    DL = Dl_from_T(T)
+    DS = Ds_from_T(T)
 
     # composite diffusivities Gamma = phase_fraction * D
     GammaL = alpha_np1 * DL
