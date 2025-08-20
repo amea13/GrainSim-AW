@@ -135,7 +135,7 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
     {
         "mode": "single_center" | "random" | "edge_line",
         "theta_deg": 0,               # 可选：固定角（所有种子共用）；若缺省且 random_theta=True 则随机取向
-        "random_theta": false,        # 可选：是否随机取向（均匀 [0, 2π)）
+        "random_theta": false,        # 可选：是否随机取向（均匀 [0, π/2)）
         "N": 10,                      # mode=="random" 时的数量
         "edge": "north",              # mode=="edge_line" 的边: "north"/"south"/"west"/"east"
         "count": 8,                   # mode=="edge_line" 的种子个数
@@ -155,7 +155,7 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
     if cfg.get("random_theta", False):
         # 每个种子独立随机取向
         def sample_theta() -> float:
-            return float(rng.uniform(0.0, 2.0 * np.pi))
+            return float(rng.uniform(0.0, np.pi / 2.0))
 
     else:
         # 固定角（默认 0°）
