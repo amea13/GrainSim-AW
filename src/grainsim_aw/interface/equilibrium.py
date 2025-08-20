@@ -72,12 +72,12 @@ def compute_interface_fields(
         mask_int = (grid.fs > 1e-12) & (grid.fs < 1.0 - 1e-12)
 
     # 物性参数，提供合理默认，实际使用请在 config 中指定
-    TL_eq = float(cfg_if.get("TL_eq", 933.47))
-    C0 = float(cfg_if.get("C0", 0.0))
-    mL = float(cfg_if.get("mL", -1.0))  # 注意不可为 0
-    Gamma = float(cfg_if.get("Gamma", 0.0))
-    k0 = float(cfg_if.get("k0", 1.0))
-    eps = float(cfg_if.get("eps_anis", 0.0))
+    TL_eq = float(cfg_if.get("TL_eq", 1809.15))
+    C0 = float(cfg_if.get("C0", 0.0082))
+    mL = float(cfg_if.get("mL", -7800.0))  # 注意不可为 0
+    Gamma = float(cfg_if.get("Gamma", 1.9e-7))
+    k0 = float(cfg_if.get("k0", 0.34))
+    eps = float(cfg_if.get("eps_anis", 0.04))
     curv_smooth = int(cfg_if.get("curv_smooth", 0))
 
     # 1) 几何量：法向与曲率

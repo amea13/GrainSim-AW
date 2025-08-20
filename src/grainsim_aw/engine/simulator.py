@@ -138,7 +138,7 @@ class Simulator:
                 self.live.update(self.grid, t, step)
 
                 # 自适应时间步长
-                dt = adaptive_dt(self.grid, fields, safety=0.2)
+                # dt = adaptive_dt(self.grid, fields, safety=0.2)
 
             # 保存最后快照
             snapshot(self.grid, t, step, self.out)

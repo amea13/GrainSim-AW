@@ -11,29 +11,8 @@ from typing import Tuple
 import numpy as np
 
 
-def _box_smooth(a: np.ndarray) -> np.ndarray:
-    """
-    极简 3x3 盒式平滑，只用于降低几何噪声。
-    不改变输入数组，返回新数组。
-    依赖 ghost 作为边界延拓。
-    """
-    # 卷积核：均匀 3x3
-    w = (
-        a
-        + np.roll(a, 1, 0)
-        + np.roll(a, -1, 0)
-        + np.roll(a, 1, 1)
-        + np.roll(a, -1, 1)
-        + np.roll(np.roll(a, 1, 0), 1, 1)
-        + np.roll(np.roll(a, 1, 0), -1, 1)
-        + np.roll(np.roll(a, -1, 0), 1, 1)
-        + np.roll(np.roll(a, -1, 0), -1, 1)
-    )
-    return w / 9.0
-
-
 def compute_normals_and_curvature(
-    fs: np.ndarray, dx: float, dy: float, *, smooth: int = 0
+    fs: np.ndarray, dx: float, dy: float
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     由 fs 场计算：
@@ -55,11 +34,6 @@ def compute_normals_and_curvature(
         与 fs 同形状，含 ghost
     """
     f = fs
-    if smooth > 0:
-        f = fs.copy()
-        for _ in range(int(smooth)):
-            f = _box_smooth(f)
-
     # 中心差分计算梯度
     fx = (np.roll(f, -1, axis=1) - np.roll(f, 1, axis=1)) / (2.0 * dx)
     fy = (np.roll(f, -1, axis=0) - np.roll(f, 1, axis=0)) / (2.0 * dy)
