@@ -6,10 +6,11 @@ from .advance import advance_interface as _advance_interface
 
 
 class GrowthProcess:
-    def geometry_and_capture(self, grid, cfg: Dict[str, Any], fields) -> None:
-        return _geometry_and_capture(grid, cfg, fields)
+
+    def geometry_and_capture(self, grid, cfg: Dict[str, Any], masks) -> None:
+        return _geometry_and_capture(grid, cfg, masks)
 
     def advance_solid(
-        self, grid, vn: np.ndarray, dt: float, cfg: Dict[str, Any], fields
+        self, grid, vn: np.ndarray, dt: float, cfg: Dict[str, Any], fields, masks
     ):
-        return _advance_interface(grid, vn, dt, cfg, fields)
+        return _advance_interface(grid, masks, vn, dt, cfg, fields)

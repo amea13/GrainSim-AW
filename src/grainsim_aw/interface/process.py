@@ -7,22 +7,28 @@ from .velocity import compute_velocity
 
 
 class InterfaceProcess:
-    def curvature(self, grid, cfg: Dict[str, Any], fields: Fields) -> None:
-        compute_curvature(grid, fields.masks, cfg, out=fields.kappa)
 
-    def normal(self, grid, cfg: Dict[str, Any], fields: Fields) -> None:
-        compute_normal(grid, fields.masks, cfg, out_nx=fields.nx, out_ny=fields.ny)
+    def curvature(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
+        compute_curvature(grid, masks, cfg, out=fields.kappa)
 
-    def equilibrium(self, grid, cfg: Dict[str, Any], fields: Fields) -> None:
+    def normal(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
+        compute_normal(grid, masks, cfg, out_nx=fields.nx, out_ny=fields.ny)
+
+    def equilibrium(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
         compute_equilibrium(
-            grid, fields.masks, cfg, out_cls=fields.cls, out_css=fields.css
+            grid,
+            masks,
+            cfg,
+            out_cls=fields.cls,
+            out_css=fields.css,
+            out_ani=fields.ani,
         )
 
-    def velocity(self, grid, cfg: Dict[str, Any], fields: Fields) -> None:
+    def velocity(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
         compute_velocity(
             grid,
-            fields.masks,
             cfg,
+            masks,
             normal=(fields.nx, fields.ny),
             eq=(fields.cls, fields.css),
             out_vn=fields.vn,

@@ -50,7 +50,7 @@ def compute_verts(grid, masks: Dict[str, np.ndarray]) -> Verts:
     yC = ((I - i0) + 0.5) * dy + ecc_y
 
     # 四个顶点方向：theta + pi/4 + k*(pi/2)
-    base = theta + np.pi / 4.0
+    base = theta
     for k in range(4):
         ang = base + k * (np.pi / 2.0)
         dxk = L * np.cos(ang)
@@ -96,13 +96,12 @@ def _map_abs_point_to_index(
     return i, j
 
 
-def geometry_and_capture(grid, cfg: Dict[str, Any], fields) -> None:
+def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
     """
     计算界面父胞的 ESVC 顶点并执行一次捕捉。状态在 grid 上原地更新。
     - cfg: MDCS 相关参数（例如 {"capture_seed_fs": 0.005}）
     - fields: IfaceFieldsBuf，使用其中的 masks（"intf"/"liq" 等）
     """
-    masks = fields.masks
     mask_int = masks.get("intf")
     mask_liq = masks.get("liq")
     if mask_int is None or mask_liq is None:

@@ -97,6 +97,7 @@ from ..multiphysics.process import TransportProcess
 # --- 可视化与输出 ---
 from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
+from ..io.csv_matrix import dump_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -192,8 +193,7 @@ class Simulator:
         step = 0
 
         masks = classify_phases(self.grid)  # 约定键：liq | intf | sol
-        prev_intf = np.zeros_like(self.grid.fs, dtype=bool)
-        fields: Fields | None = None
+        fields = Fields.like(self.grid)
 
         # 2) 可视化启动
         if self.live:
@@ -207,61 +207,54 @@ class Simulator:
                 # 3-1) 更新 ghosts 与相掩码
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
 
-                # 第一次创建界面场，之后复用
-                if fields is None:
-                    with_vec = (
-                        self.cfg.get("physics", {})
-                        .get("interface", {})
-                        .get("store_vxy", False)
-                    )
-                    with_ani = (
-                        self.cfg.get("physics", {})
-                        .get("interface", {})
-                        .get("store_ani", False)
-                    )
-                    fields = Fields.like(
-                        self.grid,
-                        masks,
-                        with_vec=with_vec,
-                        with_ani=with_ani,
-                        need_clear=False,
-                    )
-                else:
-                    fields.reset(masks, need_clear=False)
-
                 # 3-2) Thevoz 形核
                 self.nuc.nucleate(
                     self.grid, self.rng, self.cfg.get("nucleation", {}), masks
                 )
 
+                # dump_matrix(self.grid.fs, f"debug/fs0{step:06d}.csv")
+                # dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
+
                 # 3-3) ESVC 几何与捕捉
                 self.gro.geometry_and_capture(
-                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), fields
+                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
                 )
 
-                # 仅对上一帧界面带清零（避免全场 O(N) 清零）
+                # dump_matrix(self.grid.fs, f"debug/fs1{step:06d}.csv")
+
                 masks = classify_phases(self.grid)
-                fields.clear_on(prev_intf)
-                prev_intf[...] = masks["intf"]
+                fields = Fields.like(self.grid)
 
                 # 3-4) 计算曲率
                 self.itf.curvature(
-                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                    self.grid,
+                    self.cfg.get("physics", {}).get("interface", {}),
+                    fields,
+                    masks,
                 )
 
                 # 3-5) 计算法向（圆质心法）
                 self.itf.normal(
-                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                    self.grid,
+                    self.cfg.get("physics", {}).get("interface", {}),
+                    fields,
+                    masks,
                 )
 
                 # 3-6) 界面平衡固、液相浓度
                 self.itf.equilibrium(
-                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                    self.grid,
+                    self.cfg.get("physics", {}).get("interface", {}),
+                    fields,
+                    masks,
                 )
 
                 # 3-7) 界面法向生长速率
                 self.itf.velocity(
-                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                    self.grid,
+                    self.cfg.get("physics", {}).get("interface", {}),
+                    fields,
+                    masks,
                 )
 
                 # 3-8) 推进固相，更新 fs 与 ESVC 半对角线，得到 fs_dot
@@ -271,11 +264,15 @@ class Simulator:
                     dt,
                     self.cfg.get("physics", {}).get("mdcs", {}),
                     fields,
+                    masks,
                 )
 
                 # 3-9) 溶质场一步
                 self.trn.step_solute(
-                    self.grid, self.cfg.get("physics", {}).get("solute", {}), dt, fields
+                    self.grid,
+                    self.cfg.get("physics", {}).get("solute", {}),
+                    dt,
+                    fields,
                 )
 
                 # 3-10) 温度更新

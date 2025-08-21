@@ -1,7 +1,7 @@
 {
     "domain": {
-        "nx": 51,
-        "ny": 51,
+        "nx": 151,
+        "ny": 151,
         "dx": 1e-6,
         "dy": 1e-6,
         "nghost": 3,
@@ -12,8 +12,8 @@
         "C0": 0.0082
     },
     "time": {
-        "dt": 1e-5,
-        "t_end": 1e-2,
+        "dt": 5e-5,
+        "t_end": 1,
         "save_every": 100000000
     },
     "run": {
@@ -33,7 +33,7 @@
         "N": 10,
         "edge": "north",
         "count": 8,
-        "eps_over_edge": 0.02,
+        "eps_over_edge": 0.002,
         "capture_seed_fs": 0.005
     },
     "physics": {

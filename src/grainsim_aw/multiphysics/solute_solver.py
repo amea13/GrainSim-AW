@@ -37,7 +37,7 @@ import numpy as np
 
 from ..core.material import Dl_from_T, Ds_from_T
 
-__all__ = ["solute_advance", "step_solute"]
+__all__ = ["step_solute"]
 
 
 # -----------------------
@@ -129,11 +129,10 @@ def _jacobi_sweep(
 # -----------------------
 # 主入口
 # -----------------------
-def solute_advance(
+def step_solute(
     grid,
     cfg: Dict,
     dt: float,
-    masks: Dict[str, np.ndarray],  # 目前未显式使用，保留扩展
     CL_star: np.ndarray,  # 界面液相平衡浓度 C_L^*（来自 equilibrium）
     fs_dot: np.ndarray,  # 本步固相率时间导数（来自界面推进）
 ) -> None:
@@ -233,19 +232,3 @@ def solute_advance(
     # 回写 core
     grid.CL[ys, xs] = CL_c
     grid.CS[ys, xs] = CS_c
-
-
-def step_solute(
-    *,
-    grid,
-    cfg: Dict,
-    dt: float,
-    masks: Dict[str, np.ndarray],
-    fs_dot: np.ndarray,
-    CL_star: np.ndarray,
-):
-    """
-    与 TransportProcess.step_solute 对接的薄包装。
-    仅转调 solute_advance；参数名与顺序与编排器保持一致。
-    """
-    return solute_advance(grid, cfg, dt, masks, CL_star, fs_dot)

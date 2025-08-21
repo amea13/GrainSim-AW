@@ -83,6 +83,7 @@ def update_Ldia(grid, delta_fs: np.ndarray, theta: np.ndarray) -> None:
 
 def advance_interface(
     grid,
+    masks,
     vn: np.ndarray,
     dt: float,
     cfg: Dict[str, Any],
@@ -93,7 +94,6 @@ def advance_interface(
     返回 fs_dot（同 fields.fs_dot）。
     """
     fs = grid.fs
-    masks = fields.masks
     mask_int = masks.get("intf")
 
     dx = float(grid.dx)
