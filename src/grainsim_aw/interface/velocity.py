@@ -45,6 +45,24 @@ def compute_velocity(
     k0 = float(cfg.get("k0", 1.0))
     forbid_remelt = bool(cfg.get("forbid_remelt", True))
 
+    # ——— 在读到 fs 之后，band 计算之后插入 ———
+    gy, gx = np.gradient(grid.fs, grid.dy, grid.dx)  # 注意顺序：axis0→dy, axis1→dx
+    mag = np.hypot(gx, gy) + 1e-30
+    nx_loc = gx / mag
+    ny_loc = gy / mag
+
+    # 对比上游传入的 normal（假定 normal=(fields.nx, fields.ny)）
+    nx_ext, ny_ext = normal
+
+    # 仅在界面带上统计差异
+    d_nx = float(np.nanmean(np.abs(nx_ext[band] - nx_loc[band])))
+    d_ny = float(np.nanmean(np.abs(ny_ext[band] - ny_loc[band])))
+    print("[normal check] mean|Δnx|=", d_nx, " mean|Δny|=", d_ny)
+
+    # 法向是否单位化良好
+    unit_err = float(np.nanmax(np.abs(np.hypot(nx_ext, ny_ext)[band] - 1.0)))
+    print("[normal check] max ||n||-1 on band =", unit_err)
+
     band: np.ndarray = masks["intf"].astype(bool)
     nx, ny = normal  # (fields.nx, fields.ny)
     CLs, CSs = eq  # (fields.cls, fields.css)

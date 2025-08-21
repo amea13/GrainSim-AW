@@ -207,7 +207,7 @@ class Simulator:
                 # 3-1) 更新 ghosts 与相掩码
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
 
-                # 第一次创建，之后复用
+                # 第一次创建界面场，之后复用
                 if fields is None:
                     with_vec = (
                         self.cfg.get("physics", {})
@@ -240,6 +240,7 @@ class Simulator:
                 )
 
                 # 仅对上一帧界面带清零（避免全场 O(N) 清零）
+                masks = classify_phases(self.grid)
                 fields.clear_on(prev_intf)
                 prev_intf[...] = masks["intf"]
 
