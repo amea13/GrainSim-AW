@@ -1,158 +1,301 @@
-import numpy as np  # numpy做数值计算
-from typing import Optional  # typing 确保类型注解
-import logging  # logging 记录日志
+# -*- coding: utf-8 -*-
+"""
+求解器（Simulator）
+===================
 
-from ..core.grid import (
-    create_grid,
-    update_ghosts,
-    classify_phases,
-)  # 管理计算网格，包括创建和更新边界ghost cells
-from ..nucleation import apply as step_nucleation  # Thevoz方法异质形核
-from ..nucleation import seed_initialize
-from ..interface import compute_interface_fields  # 计算界面相关的场
-from ..growth_capture import capture_pass, advance_no_capture  # 处理MDCS捕获
-from ..multiphysics import solute_advance, total_solute_mass  # 溶质场偏微分方程求解
-from ..multiphysics import sample_T  # 温度场加载
-from ..io.writer import prepare_out, write_meta, snapshot  # 数据输出
-from ..viz.liveplot import LivePlotter  # 实时可视化
-from .time_step import adaptive_dt, diagnose_dt  # 自适应时间步长
-from grainsim_aw.io.csv_matrix import dump_matrix
+【功能】
+本模块实现“编排器”角色，严格按照既定流程调用各物理过程的 Process 类，
+自身不复写具体数值细节，尽量减少跨模块耦合与重复。
 
-# 创建一个日志记录器
+【输入】
+- cfg: dict
+  运行配置字典。推荐结构如下，字段名与默认值仅作参考，具体以各子模块实现为准。
+
+配置示例（JSON 语义）
+--------------------
+{
+  "domain": {
+    "nx": 256, "ny": 256,
+    "dx": 1.0e-6, "dy": 1.0e-6,
+    "bc": { "x": "periodic", "y": "wall" },
+    "C0": 0.02
+  },
+  "time": {
+    "dt": 2.0e-4,
+    "t_end": 16.0,
+    "save_every": 50
+  },
+  "run": {
+    "seed": 42,
+    "output_dir": "data/output/run-minimal"
+  },
+  "viz": {
+    "live": { "enable": true, "interval": 1 }
+  },
+  "init": {
+    "mode": "random",
+    "count": 20,
+    "k0": 0.34
+  },
+  "nucleation": { "rate": 1.0, "sigma": 0.1 },
+  "physics": {
+    "interface": { "k0": 0.34 },
+    "mdcs": { "capture_radius": 1.0 },
+    "solute": { "scheme": "jacobi", "max_iter": 200, "tol": 1e-8 }
+  },
+  "temperature": {
+    "mode": "table",
+    "T0": 1800.0
+  }
+}
+
+【输出】
+- run() 期间：
+  1) 按 save_every 写出快照到输出目录
+  2) 若启用实时显示，则刷新 LivePlotter
+  3) 日志记录关键统计量，例如总溶质量
+
+【流程】
+初始化（__init__）四步：
+  1. 配置字典、创建网格、随机数生成器、输出目录与元数据
+  2. 初始化基础物理场并更新 ghost
+  3. 可选：手动形核初始种子
+  4. 实时可视化工具初始化
+
+主循环（run）十二步：
+  1. 更新 ghosts 与相掩码
+  2. Thevoz 形核
+  3. ESVC 几何与捕捉
+  4. 计算曲率
+  5. 计算法向（圆质心法）
+  6. 界面平衡固、液相浓度
+  7. 界面法向生长速率
+  8. 推进固相率与 ESVC 半对角线，得到 fs_dot
+  9. 溶质场一步
+  10. 温度更新
+  11. 保存快照
+  12. 刷新可视化
+
+注：如需自适应时间步，可在标注处添加策略并控制稳定性。
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional, Dict, Any
+import numpy as np
+
+# --- 核心数据结构与基础操作 ---
+from ..core.grid import create_grid, update_ghosts, classify_phases, Grid
+from ..interface.fields import IfaceFieldsBuf as Fields
+
+# --- 过程门面类（各包的 process.py 提供） ---
+from ..nucleation.process import NucleationProcess
+from ..growth_capture.process import GrowthProcess
+from ..interface.process import InterfaceProcess
+from ..multiphysics.process import TransportProcess
+
+# --- 可视化与输出 ---
+from ..viz.liveplot import LivePlotter
+from ..io.writer import prepare_out, write_meta, snapshot
+
 logger = logging.getLogger(__name__)
-logging.getLogger("matplotlib").setLevel(logging.WARNING)
-logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
-logging.getLogger("PIL").setLevel(logging.WARNING)
-logging.getLogger("PIL.PngImagePlugin").setLevel(logging.WARNING)
 
 
-# 模拟器类：负责初始化、运行和实时可视化
 class Simulator:
-    # 初始化方法 初始化模拟器，设置网格、随机数生成器、输出目录、可视化工具等
-    def __init__(self, cfg: dict):
-        self.cfg = cfg  # 配置字典
-        self.grid = create_grid(cfg["domain"])  # 创建计算网格
+    """
+    高层求解器编排器
 
-        C0 = float(self.cfg.get("physics", {}).get("interface", {}).get("C0", 0.0))
-        self.grid.T[:] = sample_T(self.grid, 0.0, self.cfg.get("temperature", {}))
-        self.grid.CL[:] = C0
+    【输入】
+    - cfg: dict
+      运行配置字典，结构见模块顶部示例。
+
+    【成员】
+    - cfg: dict      原始配置
+    - grid: Grid     计算域网格与场
+    - rng: np.random.Generator 随机数生成器
+    - out: str       输出目录
+    - live: Optional[LivePlotter] 实时可视化
+    - nuc: NucleationProcess
+    - gro: GrowthProcess
+    - itf: InterfaceProcess
+    - trn: TransportProcess
+    """
+
+    # =====================
+    # 初始化阶段（四步）
+    # =====================
+    def __init__(self, cfg: Dict[str, Any]):
+        """
+        【功能】初始化求解器，完成基础构建、场初始化、可选初始形核以及可视化准备。
+
+        【输入】
+        - cfg: dict
+          运行配置。必须包含 time、domain、run 三段。
+
+        【输出】
+        - 内部状态被创建与就绪，不返回值。
+        """
+        self.cfg = cfg
+
+        # 1) 配置与基础构建：网格、随机数、输出、元数据
+        self.grid: Grid = create_grid(cfg["domain"])
+        self.rng = np.random.default_rng(cfg["run"]["seed"])
+        self.out = prepare_out(cfg["run"]["output_dir"])
+        write_meta(cfg, self.out)
+
+        # 2) 初始化基础场与 ghost
+        C0 = float(cfg["domain"].get("C0", 0.0))
         self.grid.fs[:] = 0.0
+        self.grid.CL[:] = C0
+        # 初始温度，采用温度适配器在 t=0 的采样
+        # 这里不直接导入适配函数，而是复用 TransportProcess 的统一入口
+        self.trn = TransportProcess()
+        self.trn.update_temperature(self.grid, cfg.get("temperature", {}), t=0.0)
+        update_ghosts(self.grid, cfg["domain"]["bc"])
 
-        self.rng = np.random.default_rng(cfg["run"]["seed"])  # 随机数生成器
-        self.out = prepare_out(cfg["run"]["output_dir"])  # 输出目录
-        write_meta(cfg, self.out)  # 写入元数据
-        update_ghosts(self.grid, cfg["domain"]["bc"])  # 更新ghost层
-        init_cfg = dict(self.cfg.get("init", {}))
+        # 3) 可选：手动初始形核
+        self.nuc = NucleationProcess()
+        init_cfg = dict(cfg.get("init", {}))
         init_cfg.setdefault(
             "k0",
-            float(self.cfg.get("physics", {}).get("interface", {}).get("k0", 0.34)),
+            float(cfg.get("physics", {}).get("interface", {}).get("k0", 0.34)),
         )
         if init_cfg:
-            placed = seed_initialize(self.grid, self.rng, init_cfg)
-            logger.info("Init seeds placed: %d", placed)
-        self.live = LivePlotter(
-            self.cfg.get("viz", {}).get("live", {})
-        )  # 实时可视化工具
+            self.nuc.seed_manual(self.grid, self.rng, init_cfg)
 
-    # 运行方法
-    def run(self):
-        # 时间参数 存储参数
-        dt = self.cfg["time"]["dt"]
-        t_end = self.cfg["time"]["t_end"]
-        save_every = self.cfg["time"]["save_every"]
+        # 4) 实时可视化初始化
+        self.live: Optional[LivePlotter] = LivePlotter(
+            cfg.get("viz", {}).get("live", {})
+        )
+
+        # 其他过程对象
+        self.gro = GrowthProcess()
+        self.itf = InterfaceProcess()
+
+    # =====================
+    # 运行阶段（十二步）
+    # =====================
+    def run(self) -> None:
+        """
+        【功能】启动主循环，按既定顺序推进物理过程。
+
+        【输入】无（使用 __init__ 已就绪的内部成员）
+
+        【输出】无（产生快照文件并可视化；必要统计写日志）
+        """
+        # 1) 时间参数读取与初始化
+        dt = float(self.cfg["time"]["dt"])
+        t_end = float(self.cfg["time"]["t_end"])
+        save_every = int(self.cfg["time"]["save_every"])
 
         t = 0.0
         step = 0
-        # 启动实时显示
-        self.live.start(self.grid)
-        masks = classify_phases(self.grid.fs, self.grid.nghost)
+
+        masks = classify_phases(self.grid)  # 约定键：liq | intf | sol
+        prev_intf = np.zeros_like(self.grid.fs, dtype=bool)
+        fields: Fields | None = None
+
+        # 2) 可视化启动
+        if self.live:
+            self.live.start(self.grid)
+
         try:
-            # 时间循环
             while t < t_end:
                 step += 1
                 t += dt
 
-                # A) 先更新 ghosts & 掩码
+                # 3-1) 更新 ghosts 与相掩码
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
 
-                # B) Thevoz 形核：返回本步新核掩码（seeds_mask），并在 grid 上把核元设置好：
-                #    fs=1, L_dia=Lmax(theta), ecc=0, grain_id/theta 赋值
-                seeds_mask = step_nucleation(
+                # 第一次创建，之后复用
+                if fields is None:
+                    with_vec = (
+                        self.cfg.get("physics", {})
+                        .get("interface", {})
+                        .get("store_vxy", False)
+                    )
+                    with_ani = (
+                        self.cfg.get("physics", {})
+                        .get("interface", {})
+                        .get("store_ani", False)
+                    )
+                    fields = Fields.like(
+                        self.grid,
+                        masks,
+                        with_vec=with_vec,
+                        with_ani=with_ani,
+                        need_clear=False,
+                    )
+                else:
+                    fields.reset(masks, need_clear=False)
+
+                # 3-2) Thevoz 形核
+                self.nuc.nucleate(
                     self.grid, self.rng, self.cfg.get("nucleation", {}), masks
                 )
 
-                # C) 全局“捕捉优先”——把“旧界面带 ∪ 新核”统一作为父胞执行一次捕捉
-                seeds_mask = seeds_mask  # 你的 thevoz 返回值
-                if seeds_mask is None:
-                    parent_mask = masks["mask_int"]
-                else:
-                    parent_mask = (
-                        masks["mask_int"] | seeds_mask
-                    )  # 两者都是 bool ndarray
-                capture_pass(
-                    self.grid,
-                    masks,
-                    self.cfg["physics"]["mdcs"],
-                    parent_mask=masks["mask_int"],
+                # 3-3) ESVC 几何与捕捉
+                self.gro.geometry_and_capture(
+                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), fields
                 )
 
-                # D) 捕捉后，ghosts 与 masks 已过期；立刻重算（供 Vn 与推进使用）
-                update_ghosts(self.grid, self.cfg["domain"]["bc"])
-                masks = classify_phases(self.grid.fs, self.grid.nghost)
+                # 仅对上一帧界面带清零（避免全场 O(N) 清零）
+                fields.clear_on(prev_intf)
+                prev_intf[...] = masks["intf"]
 
-                
-
-                # E) 计算界面热力学平衡（Vn、nx,ny、κ、各向异性、C* 等）
-                fields = compute_interface_fields(
-                    self.grid,
-                    self.cfg.get("physics", {}).get("interface", {}),
-                    self.cfg.get("physics", {}).get("orientation", {}),
-                    masks,
+                # 3-4) 计算曲率
+                self.itf.curvature(
+                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
                 )
 
-                #dump_matrix(fields.nx, f"debug/nx_{step:06d}.csv")
-                #dump_matrix(fields.ny, f"debug/ny_{step:06d}.csv")
-                #dump_matrix(fields.kappa, f"debug/kappa_{step:06d}.csv")
+                # 3-5) 计算法向（圆质心法）
+                self.itf.normal(
+                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                )
 
-                # F) 仅推进 Δfs / L_dia
-                fs_dot = advance_no_capture(
+                # 3-6) 界面平衡固、液相浓度
+                self.itf.equilibrium(
+                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                )
+
+                # 3-7) 界面法向生长速率
+                self.itf.velocity(
+                    self.grid, self.cfg.get("physics", {}).get("interface", {}), fields
+                )
+
+                # 3-8) 推进固相，更新 fs 与 ESVC 半对角线，得到 fs_dot
+                self.gro.advance_solid(
                     self.grid,
-                    fields,
+                    fields.vn,
+                    dt,
                     self.cfg.get("physics", {}).get("mdcs", {}),
-                    dt,
-                    masks,
+                    fields,
                 )
 
-                # G) 溶质/温度更新（使用最新 fs 与 fs_dot）
-                solute_advance(
+                # 3-9) 溶质场一步
+                self.trn.step_solute(
+                    self.grid, self.cfg.get("physics", {}).get("solute", {}), dt, fields
+                )
+
+                # 3-10) 温度更新
+                self.trn.update_temperature(
                     self.grid,
-                    self.cfg.get("physics", {}).get("solute", {}),
-                    dt,
-                    masks,
-                    CL_star=fields.CLs,
-                    fs_dot=fs_dot,
+                    self.cfg.get("temperature", {}),
+                    t,
                 )
-                self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
-                # 计算总溶质质量
-                M = total_solute_mass(self.grid)
 
-                #dump_matrix(self.grid.CL, f"debug/CL_{step:06d}.csv")
-                #dump_matrix(self.grid.CS, f"debug/CS_{step:06d}.csv")
-                #dump_matrix(self.grid.fs, f"debug/fs_{step:06d}.csv", float_fmt="%.6f")
-
-                # 后处理
-                # 保存快照
+                # 3-11) 保存快照
                 if step % save_every == 0:
                     snapshot(self.grid, t, step, self.out)
 
-                # 更新实时显示
-                self.live.update(self.grid, t, step)
+                # 3-12) 刷新可视化
+                if self.live:
+                    self.live.update(self.grid, t, step)
 
-                # 自适应时间步长
-                # dt = adaptive_dt(self.grid, fields, safety=0.2)
-
-            # 保存最后快照
+            # 循环结束后保存一次
             snapshot(self.grid, t, step, self.out)
+
         finally:
-            # 关闭窗口
-            self.live.close()
+            if self.live:
+                self.live.close()

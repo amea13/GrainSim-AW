@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
+from typing import Dict
 
 
 @dataclass
@@ -99,12 +100,49 @@ def update_ghosts(grid: Grid, bc: str = "neumann0"):
         arr[:, -g:] = arr[:, -2 * g : -g]
 
 
-def classify_phases(fs: np.ndarray, nghost: int, tau_liq=1e-12, tau_sol=1 - 1e-12):
+def classify_phases(
+    grid, tau_liq: float = 1e-12, tau_sol: float = 1.0 - 1e-12
+) -> Dict[str, np.ndarray]:
     """
-    基于 fs 的三态掩码（液/界/固），返回包含 ghost 的布尔数组。
-    注意：统计或积分时请只在 grid.core 区域使用这些掩码。
+    【功能】基于 grid.fs 的三态掩码（液/界/固），返回包含 ghost 的布尔数组。
+          统计或积分时请只在 core 区域使用这些掩码（例如 grid.core 或自行切片）。
+
+    【输入】
+    - grid: Grid
+      需至少提供属性：
+        - fs: np.ndarray   固相率场，shape=(ny, nx)
+        - nghost: int      ghost 层厚度（仅用于调用方裁剪 core）
+        - （可选）tau_liq/tau_sol: float 若 Grid 定义了，可覆盖默认阈值
+    - tau_liq: float       视为“液相”的上阈（默认 1e-12）
+    - tau_sol: float       视为“固相”的下阈（默认 1-1e-12）
+
+    【输出】
+    - masks: dict[str, np.ndarray]  （包含 ghost）
+        必含键：
+          - "mask_liq" | "mask_int" | "mask_sol"  # 保持你现有命名
+        额外提供等价别名（便于新代码更简洁）：
+          - "liq" | "intf" | "sol"
+
+    【数值说明】
+    - 阈值用于把 fs∈[0,1] 粗分为液/界/固；界面带 = ~(liq | sol)。
+    - 若 grid 定义了 grid.tau_liq / grid.tau_sol，则优先使用之。
     """
-    mask_liq = fs < tau_liq
-    mask_sol = fs > tau_sol
+    # 允许 Grid 覆盖默认阈值
+    tl = getattr(grid, "tau_liq", tau_liq)
+    ts = getattr(grid, "tau_sol", tau_sol)
+
+    fs = grid.fs
+    mask_liq = fs < tl
+    mask_sol = fs > ts
     mask_int = ~(mask_liq | mask_sol)
-    return {"mask_liq": mask_liq, "mask_int": mask_int, "mask_sol": mask_sol}
+
+    masks = {
+        "mask_liq": mask_liq,
+        "mask_int": mask_int,
+        "mask_sol": mask_sol,
+        # 别名（等价引用，不额外拷贝）
+        "liq": mask_liq,
+        "intf": mask_int,
+        "sol": mask_sol,
+    }
+    return masks

@@ -128,7 +128,7 @@ def _infect_ring_by_vertices(
 # ---------- 主入口：seed_initialize ----------
 
 
-def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
+def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]):
     """
     可控初始种子（一次性初始化）。
     配置示例:
@@ -225,7 +225,6 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
         raise ValueError(f"init.mode 不支持: {mode}")
 
     # 逐个落子
-    placed = 0
     next_gid = int(gid_a.max()) + 1
     for i0, j0 in seeds:
         # 避免覆盖已有非液相（极少见于重复初始化）
@@ -250,9 +249,5 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]) -> int:
         # 2) 一次性感染：按取向四顶点感染（一级或二级邻胞，取决于 θ）
         _infect_ring_by_vertices(grid, i0, j0, theta0, eps_over, fs_child, k0)
 
-        placed += 1
-        next_gid += 1
-
     # 更新 ghost（顶点感染已修改 fs/几何）
     update_ghosts(grid)
-    return placed
