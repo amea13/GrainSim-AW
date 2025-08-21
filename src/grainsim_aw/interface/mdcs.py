@@ -6,7 +6,6 @@ import numpy as np
 
 from .kernels import centroid_normal
 from .geometry import L_n, shape_factor_GF, update_Ldia, vertices
-from .capture_rules import apply as apply_capture_rules
 
 
 def capture_pass(
@@ -33,7 +32,7 @@ def capture_pass(
 
     # 这三个阵当前 apply 不依赖（df_parent 仅用于平局破），给零阵即可
     Z = np.zeros_like(grid.fs)
-    apply_capture_rules(grid, verts, Z, Z, Z, masks_cap, cfg)
+
     # 注意：此处已原地修改 grid.fs / grain_id / theta / ecc / L_dia（仅初始化新界面元）
 
 
