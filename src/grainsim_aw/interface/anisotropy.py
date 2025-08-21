@@ -12,45 +12,65 @@ import numpy as np
 
 
 def compute_normals_and_curvature(
-    fs: np.ndarray, dx: float, dy: float
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    由 fs 场计算：
-      - 法向分量 nx, ny 归一化指向“固相增大方向”（与 ∇fs 同向）
-      - 曲率 kappa = ∂x nx + ∂y ny
+    fs: np.ndarray,
+    dx: float,
+    dy: float,
+    *,
+    mask_int: np.ndarray | None = None,
+    smooth: int = 1,  # 对 fs 轻度平滑 1~2 次
+    smooth_n: int = 1,  # 对 n 再轻度平滑 1 次
+):
+    f = np.asarray(fs, dtype=float)
 
-    参数
-    ----
-    fs : ndarray
-        含 ghost 的固相分数场 [0,1]
-    dx, dy : float
-        网格步长 [m]
-    smooth : int
-        若 >0 则对 fs 先进行 smooth 次 3x3 盒式平滑，用于抑制锯齿噪声
+    # 1) 只为“曲率用途”对 fs 做极轻的 3x3 盒式平滑，抑制台阶
+    def box3(a):
+        return (
+            a
+            + np.roll(a, 1, 0)
+            + np.roll(a, -1, 0)
+            + np.roll(a, 1, 1)
+            + np.roll(a, -1, 1)
+            + np.roll(np.roll(a, 1, 0), 1, 1)
+            + np.roll(np.roll(a, 1, 0), -1, 1)
+            + np.roll(np.roll(a, -1, 0), 1, 1)
+            + np.roll(np.roll(a, -1, 0), -1, 1)
+        ) / 9.0
 
-    返回
-    ----
-    nx, ny, kappa : ndarray
-        与 fs 同形状，含 ghost
-    """
-    f = fs
-    # 中心差分计算梯度
-    fx = (np.roll(f, -1, axis=1) - np.roll(f, 1, axis=1)) / (2.0 * dx)
-    fy = (np.roll(f, -1, axis=0) - np.roll(f, 1, axis=0)) / (2.0 * dy)
+    s = f.copy()
+    for _ in range(max(0, smooth)):
+        s = box3(s)
 
-    # 归一化，加入小正数保护，避免除零放大噪声
-    mag2 = fx * fx + fy * fy
-    guard = max(1e-30, float(np.median(mag2)) * 1e-12 + 1e-18)
-    inv_mag = 1.0 / np.sqrt(mag2 + guard)
-    nx = fx * inv_mag
-    ny = fy * inv_mag
+    # 2) 只在界面带计算梯度与法向；带外法向置零
+    fx = (np.roll(s, -1, 1) - np.roll(s, 1, 1)) / (2.0 * dx)
+    fy = (np.roll(s, -1, 0) - np.roll(s, 1, 0)) / (2.0 * dy)
+    mag = np.hypot(fx, fy)
 
-    # 中心差分计算散度，得到曲率
+    # 自动界面带：若未提供 mask_int，用 0<fs<1 定义
+    if mask_int is None:
+        band = (fs > 1e-8) & (fs < 1 - 1e-8)
+    else:
+        band = mask_int.astype(bool)
+
+    inv = np.zeros_like(mag)
+    inv[band] = 1.0 / np.maximum(mag[band], 1e-12)  # 带内保护
+    nx = fx * inv
+    ny = fy * inv
+    nx[~band] = 0.0
+    ny[~band] = 0.0
+
+    # 3) 法向再平滑一次，避免散度看到硬跳变
+    for _ in range(max(0, smooth_n)):
+        nx = box3(nx)
+        ny = box3(ny)
+
+    # 4) 计算散度，仅报告带内曲率，带外置零
     dnx_dx = (np.roll(nx, -1, 1) - np.roll(nx, 1, 1)) / (2.0 * dx)
     dny_dy = (np.roll(ny, -1, 0) - np.roll(ny, 1, 0)) / (2.0 * dy)
     kappa = dnx_dx + dny_dy
+    kappa_out = np.zeros_like(kappa)
+    kappa_out[band] = kappa[band]
 
-    return nx, ny, kappa
+    return nx, ny, kappa_out
 
 
 def anisotropy_factor(
@@ -77,3 +97,4 @@ def anisotropy_factor(
     phi = np.arctan2(ny, nx)
     ani = 1.0 - 15.0 * float(eps) * np.cos(4.0 * (phi - theta))
     return ani, phi
+

@@ -9,7 +9,7 @@
     },
     "time": {
         "dt": 5e-5,
-        "t_end": 1e-1,
+        "t_end": 1,
         "save_every": 100000000
     },
     "run": {
@@ -24,7 +24,7 @@
     },
     "init": {
         "mode": "single_center",
-        "theta_deg": 0.8,
+        "theta_deg": 0.5,
         "random_theta": false,
         "N": 10,
         "edge": "north",
@@ -83,7 +83,7 @@
                 ],
                 "CL": [
                     0.008,
-                    0.011
+                    0.0105
                 ]
             },
             "keep_open": true

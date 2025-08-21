@@ -13,7 +13,7 @@ def compute_velocity(
     grid=None,
     CLs: Optional[np.ndarray] = None,  # C_L^* at interface band
     CSs: Optional[np.ndarray] = None,  # C_S^* at interface band
-    forbid_remelt: bool = False,  # True 时把 Vn<0 截为 0
+    forbid_remelt: bool = True,  # True 时把 Vn<0 截为 0
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if grid is None or CLs is None or CSs is None or not np.any(mask_int):
         z = np.zeros_like(nx, dtype=float)
@@ -73,3 +73,86 @@ def compute_velocity(
     Vy_out = np.zeros_like(Vy)
     Vy_out[mask_int] = Vy[mask_int]
     return Z, Vx_out, Vy_out
+
+
+def compute_velocity2(
+    cfg_if: Dict[str, Any],
+    mask_int: np.ndarray,
+    nx: np.ndarray,
+    ny: np.ndarray,
+    *,
+    grid=None,
+    CLs: Optional[np.ndarray] = None,  # C_L^* at interface band (P 点)
+    CSs: Optional[np.ndarray] = None,  # C_S^* at interface band (P 点)
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    半上风重组版：
+      1) 采用“面闸门”离散分别计算 Vx, Vy（与给定公式一致）
+      2) 仅取正分量并用 |nx|,|ny| 加权：Vn = max(Vx,0)|nx| + max(Vy,0)|ny|
+      3) 仅在界面带 mask_int 上赋值，其它位置返回 0
+    """
+    # 依赖检查
+    if grid is None or CLs is None or CSs is None or not np.any(mask_int):
+        z = np.zeros_like(nx, dtype=float)
+        return z, z, z
+
+    # 读取网格与场
+    CL, CS, fs, T = grid.CL, grid.CS, grid.fs, grid.T
+    dx, dy = float(grid.dx), float(grid.dy)
+    k0 = float(cfg_if.get("k0", 1.0))
+
+    # 物性（中心点）
+    DL = Dl_from_T(T)
+    DS = Ds_from_T(T)
+
+    roll = np.roll
+    # 邻居中心值
+    CL_W, CL_E = roll(CL, 1, 1), roll(CL, -1, 1)
+    CL_S, CL_N = roll(CL, 1, 0), roll(CL, -1, 0)
+    CS_W, CS_E = roll(CS, 1, 1), roll(CS, -1, 1)
+    CS_S, CS_N = roll(CS, 1, 0), roll(CS, -1, 0)
+
+    # 面开口系数（闸门）：f_S,face = min(f_S,P, f_S,邻)
+    fs_W = np.minimum(fs, roll(fs, 1, 1))
+    fs_E = np.minimum(fs, roll(fs, -1, 1))
+    fs_S = np.minimum(fs, roll(fs, 1, 0))
+    fs_N = np.minimum(fs, roll(fs, -1, 0))
+
+    # 各面“通量因子” N_face（与你的公式逐项对应）
+    N_W = DS * (CSs - CS_W) * fs_W + DL * (CLs - CL_W) * (1.0 - fs_W)
+    N_E = DS * (CSs - CS_E) * fs_E + DL * (CLs - CL_E) * (1.0 - fs_E)
+    N_S = DS * (CSs - CS_S) * fs_S + DL * (CLs - CL_S) * (1.0 - fs_S)
+    N_N = DS * (CSs - CS_N) * fs_N + DL * (CLs - CL_N) * (1.0 - fs_N)
+
+    # 分母：仅对界面带做极小值保护，避免除零/NaN
+    den_x = (1.0 - k0) * CLs * dx
+    den_y = (1.0 - k0) * CLs * dy
+    band = mask_int.astype(bool)
+
+    def _safe_div(num, den):
+        out = np.zeros_like(num, dtype=float)
+        den_b = den[band]
+        # 用带内最大量级估计阈值
+        eps = max(1e-12, float(np.nanmax(np.abs(den_b))) * 1e-12 + 1e-18)
+        sign = np.where(den >= 0.0, 1.0, -1.0)  # 避免 sign(0)=0 的坑
+        den_safe = np.where(np.abs(den) < eps, sign * eps, den)
+        out[band] = num[band] / den_safe[band]
+        return out
+
+    # 轴向分量速度（面闸门离散）
+    Vx = _safe_div(N_W + N_E, den_x)
+    Vy = _safe_div(N_S + N_N, den_y)
+
+    # 半上风重组：只取“推进”的分量并按 |nx|,|ny| 投影
+    Vx_pos = np.maximum(Vx, 0.0)
+    Vy_pos = np.maximum(Vy, 0.0)
+
+    Vn = np.zeros_like(nx, dtype=float)
+    Vn[band] = Vx_pos[band] * np.abs(nx[band]) + Vy_pos[band] * np.abs(ny[band])
+
+    # 只返回界面带上的分量，便于调试可视化
+    Vx_out = np.zeros_like(Vx)
+    Vx_out[band] = Vx_pos[band]
+    Vy_out = np.zeros_like(Vy)
+    Vy_out[band] = Vy_pos[band]
+    return Vn, Vx_out, Vy_out

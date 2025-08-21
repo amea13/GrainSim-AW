@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from typing import Dict, Any
 import numpy as np
 
-from .anisotropy import compute_normals_and_curvature, anisotropy_factor
+from .anisotropy import (
+    compute_normals_and_curvature,
+    anisotropy_factor,
+)
 from .velocity import compute_velocity
 
 

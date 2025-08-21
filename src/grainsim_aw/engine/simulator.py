@@ -16,6 +16,7 @@ from ..multiphysics import sample_T  # 温度场加载
 from ..io.writer import prepare_out, write_meta, snapshot  # 数据输出
 from ..viz.liveplot import LivePlotter  # 实时可视化
 from .time_step import adaptive_dt, diagnose_dt  # 自适应时间步长
+from grainsim_aw.io.csv_matrix import dump_matrix
 
 # 创建一个日志记录器
 logger = logging.getLogger(__name__)
@@ -99,6 +100,8 @@ class Simulator:
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
                 masks = classify_phases(self.grid.fs, self.grid.nghost)
 
+                
+
                 # E) 计算界面热力学平衡（Vn、nx,ny、κ、各向异性、C* 等）
                 fields = compute_interface_fields(
                     self.grid,
@@ -106,6 +109,10 @@ class Simulator:
                     self.cfg.get("physics", {}).get("orientation", {}),
                     masks,
                 )
+
+                #dump_matrix(fields.nx, f"debug/nx_{step:06d}.csv")
+                #dump_matrix(fields.ny, f"debug/ny_{step:06d}.csv")
+                #dump_matrix(fields.kappa, f"debug/kappa_{step:06d}.csv")
 
                 # F) 仅推进 Δfs / L_dia
                 fs_dot = advance_no_capture(
@@ -128,6 +135,10 @@ class Simulator:
                 self.grid.T[:] = sample_T(self.grid, t, self.cfg.get("temperature", {}))
                 # 计算总溶质质量
                 M = total_solute_mass(self.grid)
+
+                #dump_matrix(self.grid.CL, f"debug/CL_{step:06d}.csv")
+                #dump_matrix(self.grid.CS, f"debug/CS_{step:06d}.csv")
+                #dump_matrix(self.grid.fs, f"debug/fs_{step:06d}.csv", float_fmt="%.6f")
 
                 # 后处理
                 # 保存快照
