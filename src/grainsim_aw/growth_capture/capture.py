@@ -32,7 +32,7 @@ def compute_verts(grid, masks: Dict[str, np.ndarray]) -> Verts:
     基于偏心中心 (ecc_x,ecc_y)、取向 theta 与半对角线 L_dia，计算四个顶点绝对坐标。
     仅在界面带上写顶点；界面外填 NaN，便于后续捕捉时快速跳过。
     """
-    mask_int = masks.get("intf") or masks.get("mask_int")
+    mask_int = masks.get("intf")
     fs = grid.fs
     theta = grid.theta
     L = grid.L_dia
@@ -103,8 +103,8 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], fields) -> None:
     - fields: IfaceFieldsBuf，使用其中的 masks（"intf"/"liq" 等）
     """
     masks = fields.masks
-    mask_int = masks.get("intf") or masks.get("mask_int")
-    mask_liq = masks.get("liq") or masks.get("mask_liq")
+    mask_int = masks.get("intf")
+    mask_liq = masks.get("liq")
     if mask_int is None or mask_liq is None:
         return  # 极简：按你的要求不做额外防御
 

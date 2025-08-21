@@ -94,7 +94,7 @@ def advance_interface(
     """
     fs = grid.fs
     masks = fields.masks
-    mask_int = masks.get("intf") or masks.get("mask_int")
+    mask_int = masks.get("intf")
 
     dx = float(grid.dx)
     dy = float(grid.dy)

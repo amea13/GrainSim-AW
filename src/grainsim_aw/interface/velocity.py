@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 import numpy as np
 
 from ..core.material import Dl_from_T, Ds_from_T
@@ -11,33 +11,57 @@ def compute_velocity(
     cfg: Dict,
     *,
     normal: Tuple[np.ndarray, np.ndarray],
-    eq: Tuple[np.ndarray, np.ndarray],  # (CLs, CSs)
+    eq: Tuple[np.ndarray, np.ndarray],  # (CLs, CSs) 仅在界面带有意义
     out_vn: np.ndarray | None = None,
     out_vx: np.ndarray | None = None,
     out_vy: np.ndarray | None = None,
 ):
     """
-    依据 Stefan 守恒的“面闸门”离散得到界面法向速度：
-      1) 计算四个面的通量因子 N_face（固/液扩散 + 闸门）
-      2) 轴向速度 Vx, Vy = (N_W+N_E)/( (1-k0)CLs*dx ), (N_S+N_N)/( (1-k0)CLs*dy )
-      3) 半上风重组：Vn = max(Vx,0)*|nx| + max(Vy,0)*|ny|
-      4) 仅在界面带写入 out_vn/out_vx/out_vy
+    用 Stefan 守恒 + “面闸门”离散计算界面法向速度。
+    步骤：
+      1) 计算四个面通量因子 N_face（固/液扩散 + 闸门）
+      2) 轴向速度:
+           Vx = (N_W + N_E) / ((1-k0) * CLs * dx)
+           Vy = (N_S + N_N) / ((1-k0) * CLs * dy)
+         —— 仅在界面带上做除法与赋值
+      3) 半上风重组:
+           Vn = max(Vx,0) * |nx| + max(Vy,0) * |ny|
+      4) 仅向界面带写入 out_vn/out_vx/out_vy（若提供）
+    说明：
+      - 只依赖 masks['intf'] 作为界面带掩码；若缺失会抛 KeyError。
+      - 为避免除零告警，分母只在带内做自适应极小值保护。
     """
-    fs = grid.fs
-    CL = grid.CL
-    CS = grid.CS
-    T = grid.T
+    if "intf" not in masks:
+        raise KeyError("masks['intf'] 缺失：请统一使用键名 'intf' 作为界面带掩码。")
 
+    # 读入场与参数
+    fs: np.ndarray = grid.fs
+    CL: np.ndarray = grid.CL
+    CS: np.ndarray = grid.CS
+    T: np.ndarray = grid.T
     dx = float(grid.dx)
     dy = float(grid.dy)
+
     k0 = float(cfg.get("k0", 1.0))
     forbid_remelt = bool(cfg.get("forbid_remelt", True))
 
-    intf: np.ndarray = masks["intf"] if "intf" in masks else masks["mask_int"]
-    nx, ny = normal  # 由 InterfaceProcess 传入 (fields.nx, fields.ny)
-    CLs, CSs = eq  # 由 InterfaceProcess 传入 (fields.cls, fields.css)
+    band: np.ndarray = masks["intf"].astype(bool)
+    nx, ny = normal  # (fields.nx, fields.ny)
+    CLs, CSs = eq  # (fields.cls, fields.css)
 
-    # 物性系数（中心点）
+    # 若当前没有界面点，直接清零返回
+    if not np.any(band):
+        if out_vn is not None:
+            out_vn[...] = 0.0
+        if out_vx is not None:
+            out_vx[...] = 0.0
+        if out_vy is not None:
+            out_vy[...] = 0.0
+        # 也返回全零，便于调试
+        z = np.zeros_like(fs, dtype=float)
+        return z, z, z
+
+    # 物性（中心点）
     DL = Dl_from_T(T)
     DS = Ds_from_T(T)
 
@@ -54,39 +78,55 @@ def compute_velocity(
     fs_S = np.minimum(fs, roll(fs, 1, 0))
     fs_N = np.minimum(fs, roll(fs, -1, 0))
 
-    # 四个面的“通量因子” N_face
+    # 面通量因子 N_face（只在 band 上使用）
     N_W = DS * (CSs - CS_W) * fs_W + DL * (CLs - CL_W) * (1.0 - fs_W)
     N_E = DS * (CSs - CS_E) * fs_E + DL * (CLs - CL_E) * (1.0 - fs_E)
     N_S = DS * (CSs - CS_S) * fs_S + DL * (CLs - CL_S) * (1.0 - fs_S)
     N_N = DS * (CSs - CS_N) * fs_N + DL * (CLs - CL_N) * (1.0 - fs_N)
 
-    # 分母（仅界面带用得到）
+    # 分母（只在 band 内会被用到）
     den_x = (1.0 - k0) * CLs * dx
     den_y = (1.0 - k0) * CLs * dy
 
-    # 数值保护（按量级给最小阈值），尽量少干预
-    band = intf.astype(bool)
-    epsx = max(1e-12, float(np.nanmax(np.abs(den_x[band]))) * 1e-12 + 1e-18)
-    epsy = max(1e-12, float(np.nanmax(np.abs(den_y[band]))) * 1e-12 + 1e-18)
-    den_x_safe = np.where(np.abs(den_x) < epsx, np.sign(den_x) * epsx, den_x)
-    den_y_safe = np.where(np.abs(den_y) < epsy, np.sign(den_y) * epsy, den_y)
+    # 自适应极小值保护（仅 band 内），避免 0/近 0 除法
+    def _protect_den(den: np.ndarray, band_mask: np.ndarray) -> np.ndarray:
+        den_safe = den.copy()
+        max_abs = float(np.nanmax(np.abs(den[band_mask])))
+        eps = max(1e-12, max_abs * 1e-12 + 1e-18)
+        # 注意 sign(0)=0，这里用 where 保持正负号一致
+        sign = np.where(den >= 0.0, 1.0, -1.0)
+        den_safe[band_mask] = np.where(
+            np.abs(den[band_mask]) < eps,
+            sign[band_mask] * eps,
+            den[band_mask],
+        )
+        return den_safe
 
-    # 轴向速度（面闸门离散）
-    Vx = (N_W + N_E) / den_x_safe
-    Vy = (N_S + N_N) / den_y_safe
+    den_x_safe = _protect_den(den_x, band)
+    den_y_safe = _protect_den(den_y, band)
 
-    # 半上风重组（只取推进方向）
-    Vx_pos = np.maximum(Vx, 0.0)
-    Vy_pos = np.maximum(Vy, 0.0)
+    # 轴向速度：只在 band 上做除法并赋值，带外为 0，避免全场除法产生告警
+    Vx = np.zeros_like(fs, dtype=float)
+    Vy = np.zeros_like(fs, dtype=float)
+    num_x = N_W + N_E
+    num_y = N_S + N_N
+    Vx[band] = num_x[band] / den_x_safe[band]
+    Vy[band] = num_y[band] / den_y_safe[band]
+
+    # 半上风重组（只取推进分量）
+    Vx_pos = np.zeros_like(Vx)
+    Vy_pos = np.zeros_like(Vy)
+    Vx_pos[band] = np.maximum(Vx[band], 0.0)
+    Vy_pos[band] = np.maximum(Vy[band], 0.0)
 
     Vn = np.zeros_like(fs, dtype=float)
     Vn[band] = Vx_pos[band] * np.abs(nx[band]) + Vy_pos[band] * np.abs(ny[band])
 
     if forbid_remelt:
-        # 正向推进已保证非负；此句仅为稳妥
-        np.maximum(Vn, 0.0, out=Vn)
+        # 进一步保证非负
+        Vn[band] = np.maximum(Vn[band], 0.0)
 
-    # 就地写出
+    # 写出（仅在界面带）
     if out_vn is not None:
         out_vn[band] = Vn[band]
     if out_vx is not None:
@@ -94,4 +134,5 @@ def compute_velocity(
     if out_vy is not None:
         out_vy[band] = Vy_pos[band]
 
+    # 同时返回，便于调试/可视化
     return Vn, Vx_pos, Vy_pos
