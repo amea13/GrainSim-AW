@@ -13,7 +13,7 @@
     },
     "time": {
         "dt": 5e-5,
-        "t_end": 1,
+        "t_end": 1e-1,
         "save_every": 100000000
     },
     "run": {
@@ -33,7 +33,7 @@
         "N": 10,
         "edge": "north",
         "count": 8,
-        "eps_over_edge": 0.002,
+        "eps_over_edge": 0.02,
         "capture_seed_fs": 0.005
     },
     "physics": {
