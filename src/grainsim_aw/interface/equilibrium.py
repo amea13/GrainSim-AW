@@ -1,134 +1,79 @@
-# -*- coding: utf-8 -*-
-"""
-界面局部平衡与派生场的编排
-- 计算界面法向、曲率、各向异性因子
-- 基于 T = T* 的局部平衡，反解 C_L* 与 C_S*
-- 速度仍为占位，由 velocity.compute_velocity 提供
-"""
-
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Tuple, Optional
 import numpy as np
 
-from .anisotropy import (
-    compute_normals_and_curvature,
-    anisotropy_factor,
-)
-from .velocity import compute_velocity
+from .geometry import compute_normal, compute_curvature
 
 
-@dataclass(frozen=True)
-class IfaceFields:
-    Vn: np.ndarray  # 法向生长速度
-    Vx: np.ndarray  # 法向速度 x 分量
-    Vy: np.ndarray  # 法向速度 y 分量
-    nx: np.ndarray  # 界面法向 x 分量
-    ny: np.ndarray  # 界面法向 y 分量
-    kappa: np.ndarray  # 曲率
-    ani: np.ndarray  # 各向异性因子 f(phi, theta)
-    CLs: np.ndarray  # 界面液相浓度 C_L^*
-    CSs: np.ndarray  # 界面固相浓度 C_S^*
+def anisotropy_factor(
+    nx: np.ndarray, ny: np.ndarray, theta: np.ndarray, eps: float
+) -> np.ndarray:
+    """f(phi, theta) = 1 - 15*eps*cos(4*(phi - theta))"""
+    if eps == 0.0:
+        return np.ones_like(nx, dtype=float)
+    phi = np.arctan2(ny, nx)
+    return 1.0 - 15.0 * float(eps) * np.cos(4.0 * (phi - theta))
 
 
-def compute_interface_fields(
+def compute_equilibrium(
     grid,
-    cfg_if: Dict[str, Any],
-    cfg_orient: Dict[str, Any],  # 预留，将来可切换取向来源。目前直接用 grid.theta
     masks: Dict[str, np.ndarray],
-) -> IfaceFields:
+    cfg: Dict,
+    normal: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    kappa: Optional[np.ndarray] = None,
+    out_cls: np.ndarray | None = None,
+    out_css: np.ndarray | None = None,
+    out_ani: np.ndarray | None = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    计算固液界面的几何量与局部平衡闭式解。
-    仅在界面带 mask_int 内赋物理值，其它位置置零或合理常数。
-
-    物理模型
-    --------
-    T* = T_L_eq + (C_L* - C0) m_L - Gamma * kappa * f(phi, theta)
-    C_S* = k0 * C_L*
-    在局部平衡假设下，界面处 T = T*，于是可反解：
-    C_L* = C0 + [ T - T_L_eq + Gamma * kappa * f ] / m_L
-
-    配置键（cfg_if）
-    ----------------
-    TL_eq : float      理论液相线温度
-    C0    : float      初始合金含量
-    mL    : float      液相线斜率（可能为负）
-    Gamma : float      Gibbs Thomson 系数
-    k0    : float      分配系数
-    eps_anis : float   各向异性幅值 epsilon
-    curv_smooth : int  曲率计算前对 fs 的盒式平滑次数，默认 0
-    Vn_const : float   可选常数法向速度，用于占位
-
-    返回
-    ----
-    IfaceFields：字段形状与 grid.fs 相同，含 ghost
+    依据局部平衡 T = T* 反解 C_L^* 与 C_S^*：
+      T* = T_L_eq + (C_L^* - C0) * m_L - Gamma * kappa * f(phi, theta)
+      => C_L^* = C0 + [T - T_L_eq + Gamma * kappa * f] / m_L
+         C_S^* = k0 * C_L^*
+    仅在界面带赋值。
     """
-    shape = grid.fs.shape
-    zeros = lambda: np.zeros(
-        shape, dtype=float
-    )  # lambda匿名函数赋值给变量 zeros，每次调用生成新的全零数组
+    fs = grid.fs
+    T = grid.T
+    theta = grid.theta
 
-    # 读取界面带掩码
-    mask_int = masks.get("mask_int", None)
-    if mask_int is None:
-        # 若未提供，按 0<fs<1 自动判定
-        mask_int = (grid.fs > 1e-12) & (grid.fs < 1.0 - 1e-12)
+    intf: np.ndarray = masks["intf"] if "intf" in masks else masks["mask_int"]
+    if intf.dtype != bool:
+        intf = intf.astype(bool, copy=False)
 
-    # 物性参数，提供合理默认，实际使用请在 config 中指定
-    TL_eq = float(cfg_if.get("TL_eq", 1809.15))
-    C0 = float(cfg_if.get("C0", 0.0082))
-    mL = float(cfg_if.get("mL", -7800.0))  # 注意不可为 0
-    Gamma = float(cfg_if.get("Gamma", 1.9e-7))
-    k0 = float(cfg_if.get("k0", 0.34))
-    eps = float(cfg_if.get("eps_anis", 0.04))
-    curv_smooth = int(cfg_if.get("curv_smooth", 0))
+    # 物性/模型参数（如未提供，给出温和默认）
+    TL_eq = float(cfg.get("TL_eq", 1809.15))
+    C0 = float(cfg.get("C0", getattr(grid, "C0", 0.0)))
+    mL = float(cfg.get("mL", -7800.0))  # 不能为 0
+    Gamma = float(cfg.get("Gamma", 1.9e-7))
+    k0 = float(cfg.get("k0", 0.34))
+    eps = float(cfg.get("eps_anis", 0.0))
 
-    # 1) 几何量：法向与曲率
-    nx = zeros()
-    ny = zeros()
-    kappa = zeros()
-    # 中间变量存取
-    nx_, ny_, kappa_ = compute_normals_and_curvature(grid.fs, grid.dx, grid.dy)
-    # 仅赋值中间变量
-    nx[mask_int] = nx_[mask_int]
-    ny[mask_int] = ny_[mask_int]
-    kappa[mask_int] = kappa_[mask_int]
+    # 法向/曲率：若未传入，则内部计算一次（便于独立使用）
+    if normal is None:
+        nx_tmp = np.zeros_like(fs, dtype=float)
+        ny_tmp = np.zeros_like(fs, dtype=float)
+        compute_normal(grid, masks, {}, out_nx=nx_tmp, out_ny=ny_tmp)
+        normal = (nx_tmp, ny_tmp)
+    nx, ny = normal
 
-    nx, ny, kappa = -nx, -ny, -kappa
+    if kappa is None:
+        kappa = np.zeros_like(fs, dtype=float)
+        compute_curvature(grid, masks, {}, out=kappa)
 
-    # 2) 各向异性因子 f(phi, theta)
-    ani = np.ones(shape, dtype=float)
-    if eps != 0.0:
-        ani_, _phi = anisotropy_factor(nx_, ny_, grid.theta, eps)
-        ani[mask_int] = ani_[mask_int]  # 非界面处保持 1
+    # 各向异性因子
+    ani = anisotropy_factor(nx, ny, theta, eps)
+    if out_ani is not None:
+        out_ani[intf] = ani[intf]
 
-    # 3) 局部平衡：反解 C_L*, C_S*
-    CLs = zeros()
-    CSs = zeros()
-
-    # 避免 mL = 0 数值问题
+    # 反解 C_L^* / C_S^*
     if abs(mL) < 1e-20:
         mL = -1e-20
+    num = (T - TL_eq) + Gamma * kappa * ani
 
-    T = grid.T
-    # 只在界面带计算
-    num = T[mask_int] - TL_eq + Gamma * kappa[mask_int] * ani[mask_int]
-    CLs[mask_int] = C0 + num / mL
-    CSs[mask_int] = k0 * CLs[mask_int]
+    CLS = out_cls if out_cls is not None else np.zeros_like(fs, dtype=float)
+    CSS = out_css if out_css is not None else np.zeros_like(fs, dtype=float)
 
-    # 4) 计算界面移动速度 Stefan守恒
-    Vn, Vx, Vy = compute_velocity(
-        cfg_if,
-        masks["mask_int"],
-        nx,
-        ny,
-        grid=grid,
-        CLs=CLs,
-        CSs=CSs,
-    )
+    CLS[intf] = C0 + num[intf] / mL
+    CSS[intf] = k0 * CLS[intf]
 
-    fields = IfaceFields(
-        Vn=Vn, Vx=Vx, Vy=Vy, nx=nx, ny=ny, kappa=kappa, ani=ani, CLs=CLs, CSs=CSs
-    )
-
-    return fields
+    return CLS, CSS

@@ -1,3 +1,6 @@
-from .equilibrium import compute_interface_fields, IfaceFields
+from .process import InterfaceProcess
+from .fields import (
+    IfaceFieldsBuf as Fields,
+)  # 便于 from grainsim_aw.interface import Fields
 
-__all__ = ["compute_interface_fields", "IfaceFields"]
+__all__ = ["InterfaceProcess", "Fields"]
