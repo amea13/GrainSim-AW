@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 from typing import Dict, Any, Tuple, Optional
 import numpy as np
@@ -79,11 +78,8 @@ def compute_curvature(
     out: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    用中心差分计算 level-set 形式的曲率 κ，号与 κ = div(∇f/|∇f|) 一致。
+    用中心差分计算 level-set 形式的曲率 κ。
     仅对界面带写入，其他位置保持 out 原值或置零。
-
-    cfg 可选项:
-      eps_curv: float，分母极小保护，默认 1e-30
     """
     fs = grid.fs
     dx = float(grid.dx)
@@ -112,7 +108,7 @@ def compute_curvature(
     ) / (4.0 * dx * dy)
 
     g2 = fx * fx + fy * fy
-    num = fxx * (fy * fy) - 2.0 * fx * fy * fxy + fyy * (fx * fx)
+    num = 2.0 * fx * fy * fxy - fxx * (fy * fy) - fyy * (fx * fx)
     den = np.power(g2, 1.5) + float(cfg.get("eps_curv", 1e-30))
 
     kappa_full = num / den
@@ -128,70 +124,84 @@ def compute_curvature(
 # n = - (num_x, num_y) / |(num_x, num_y)|
 # 只在界面带写入 out_nx/out_ny
 # =========================
+# 如果需要更简洁的版本，可以这样写：
 def compute_normal(
     grid,
     masks: Dict[str, np.ndarray],
     cfg: Dict[str, Any],
-    out_nx: Optional[np.ndarray] = None,
-    out_ny: Optional[np.ndarray] = None,
+    out_nx: np.ndarray,
+    out_ny: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    用圆核质心法计算法向，方向从固到液（对 fs 取负梯度的几何意义保持一致）。
-    仅对界面带写入，其他位置保持 out_* 原值或置零。
-
-    cfg 可选项:
-      centroid_d:   int   圆核直径，奇数，默认 7
-      centroid_sub: int   子采样数，默认 8
-      eps_norm:     float 极小保护，默认 1e-30
-    """
+    """简化版本，使用预定义的偏移量列表但更Pythonic"""
     fs = grid.fs
-    intf: np.ndarray = masks["intf"]
-    if intf is None:
-        raise KeyError("masks 中缺少 'intf' 或 'mask_int'")
-    if intf.dtype != bool:
-        intf = intf.astype(bool, copy=False)
+    dx, dy = grid.dx, grid.dy
+    intf_indices = np.where(masks["intf"])
 
-    if out_nx is None:
-        out_nx = np.zeros_like(fs, dtype=float)
-    if out_ny is None:
-        out_ny = np.zeros_like(fs, dtype=float)
+    # 预定义偏移量和权重
+    offsets_weights = _get_offsets_and_weights()
 
-    d_cells = int(cfg.get("centroid_d", 7))
-    subsample = int(cfg.get("centroid_sub", 8))
-    epsn = float(cfg.get("eps_norm", 1e-30))
+    # 向量化计算所有偏移
+    di_array, dj_array, weights_array = map(np.array, zip(*offsets_weights))
 
-    WX, WY = _get_weights(d_cells, subsample)
+    # 对每个界面点进行计算
+    for i, j in zip(*intf_indices):
+        # 计算所有邻域点的坐标
+        ni_array = i + di_array
+        nj_array = j + dj_array
 
-    roll = np.roll
-    K = WX.shape[0]
-    R = (K - 1) // 2
+        # 获取对应的fs值
+        fs_values = fs[ni_array, nj_array]
 
-    num_x = np.zeros_like(fs, dtype=float)
-    num_y = np.zeros_like(fs, dtype=float)
+        # 过滤掉fs=0的点
+        valid_mask = fs_values != 0
+        if not np.any(valid_mask):
+            continue
 
-    # 卷积式聚合
-    for a in range(K):
-        di = a - R
-        row_wx = WX[a]
-        row_wy = WY[a]
-        for b in range(K):
-            wx = row_wx[b]
-            wy = row_wy[b]
-            if wx == 0.0 and wy == 0.0:
-                continue
-            dj = b - R
-            nb = roll(roll(fs, di, axis=0), dj, axis=1)
-            if wx != 0.0:
-                num_x += nb * wx
-            if wy != 0.0:
-                num_y += nb * wy
+        fs_valid = fs_values[valid_mask]
+        weights_valid = weights_array[valid_mask]
+        di_valid = di_array[valid_mask]
+        dj_valid = dj_array[valid_mask]
 
-    mag = np.sqrt(num_x * num_x + num_y * num_y)
-    mag = np.maximum(mag, epsn)
+        # 向量化计算
+        weighted_fs = fs_valid * weights_valid
+        xfz = np.sum(weighted_fs * dj_valid * dx)
+        yfz = np.sum(weighted_fs * di_valid * dy)
+        fm = np.sum(weighted_fs)
 
-    nx_full = num_x / mag  # 从固到液
-    ny_full = num_y / mag
+        # 计算法向量
+        if fm > 0:
+            xb, yb = xfz / fm, yfz / fm
+            magnitude = np.sqrt(xb**2 + yb**2)
+            if magnitude > 0:
+                out_nx[i, j] = -xb / magnitude
+                out_ny[i, j] = -yb / magnitude
 
-    out_nx[intf] = nx_full[intf]
-    out_ny[intf] = ny_full[intf]
     return out_nx, out_ny
+
+
+def _get_offsets_and_weights():
+    """生成偏移量和权重的更简洁方式"""
+    offsets_weights = []
+
+    # 核心5×5 (权重1.0)
+    for di in range(-2, 3):
+        for dj in range(-2, 3):
+            offsets_weights.append((di, dj, 1.0))
+
+    # 环带权重规则
+    ring3_patterns = [
+        ([(0, 3), (0, -3), (3, 0), (-3, 0)], 1.0),  # 轴向
+        (
+            [(1, 3), (-1, 3), (1, -3), (-1, -3), (3, 1), (3, -1), (-3, 1), (-3, -1)],
+            0.83,
+        ),
+        (
+            [(2, 3), (-2, 3), (2, -3), (-2, -3), (3, 2), (3, -2), (-3, 2), (-3, -2)],
+            0.65,
+        ),
+    ]
+
+    for positions, weight in ring3_patterns:
+        offsets_weights.extend([(di, dj, weight) for di, dj in positions])
+
+    return offsets_weights

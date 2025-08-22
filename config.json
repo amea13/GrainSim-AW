@@ -1,7 +1,7 @@
 {
     "domain": {
-        "nx": 51,
-        "ny": 51,
+        "nx": 151,
+        "ny": 151,
         "dx": 1e-6,
         "dy": 1e-6,
         "nghost": 3,
@@ -12,8 +12,8 @@
         "C0": 0.0082
     },
     "time": {
-        "dt": 2e-4,
-        "t_end": 1e-2,
+        "dt": 1e-4,
+        "t_end": 1.0,
         "save_every": 100000000
     },
     "run": {
@@ -22,13 +22,13 @@
     },
     "temperature": {
         "mode": "constant",
-        "T0": 1794.15,
+        "T0": 1799.15,
         "cooling_rate": 0.0,
         "Gy": 0.0
     },
     "init": {
         "mode": "single_center",
-        "theta_deg": 0.0,
+        "theta_deg": 0,
         "random_theta": false,
         "N": 10,
         "edge": "north",
@@ -84,7 +84,7 @@
     "viz": {
         "live": {
             "enabled": true,
-            "stride": 5,
+            "stride": 50,
             "fields": [
                 "T",
                 "CL",
@@ -99,7 +99,7 @@
                 ],
                 "CL": [
                     0.008,
-                    0.0105
+                    0.01
                 ]
             },
             "keep_open": true

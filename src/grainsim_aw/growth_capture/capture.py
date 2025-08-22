@@ -257,41 +257,34 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
         gid[w.child_i, w.child_j] = w.gid
         theta[w.child_i, w.child_j] = w.theta
 
-        # 偏心中心用胜出顶点
+        # 父/子中心与胜出顶点
         ci, cj = w.child_i, w.child_j
-
-        # 子胞几何中心与父胞几何中心
         xC, yC = _cell_center_abs(ci, cj, dx, dy, i0, j0)
         xP, yP = _cell_center_abs(w.parent_i, w.parent_j, dx, dy, i0, j0)
-
-        # 射线起点：父胞的胜出顶点（也是子胞的“偏心核心”）
         x0, y0 = w.xv, w.yv
 
-        # 基准取向角
+        # 统一用父胞取向角
         th_parent = float(theta[w.parent_i, w.parent_j])
-
-        # 选出与父胞方向最一致的枝晶臂方向
         ux, uy, th_sel, _ = _pick_arm_direction_by_parent(th_parent, x0, y0, xP, yP)
 
-        # 在选中的方向上，计算从胜出顶点到子胞边界的长度 s_fwd
-        s_fwd = _ray_exit_length_inside_cell(x0, y0, xC, yC, dx, dy, ux, uy, EPS)
+        # 在选中方向上求 s_fwd
+        s_fwd = _ray_exit_length_inside_cell(x0, y0, xC, yC, dx, dy, ux, uy)
 
-        # 归一化占比 r，用于初始化 fs（Lmax 对四个方向等价，这个公式可复用）
-        denom = max(abs(np.cos(th_sel)), abs(np.sin(th_sel)), EPS)
-        Lmax = dx / denom
+        # 归一化
+        den = max(abs(np.cos(th_sel)), abs(np.sin(th_sel)), 1e-12)
+        Lmax = dx / den
         r = float(np.clip(s_fwd / Lmax, 0.0, 1.0))
-
-        # 以占比作为初始 fs，并与地板值取大
         fs_floor = float(cfg.get("capture_seed_fs_min", 0.001))
         fs_seed = max(r, fs_floor)
+
+        # 先继承角度再写 geometry
+        theta[ci, cj] = th_parent
+        ecc_x[ci, cj] = x0 - xC
+        ecc_y[ci, cj] = y0 - yC
+
+        # 只抬高
         if fs_seed > fs[ci, cj]:
             fs[ci, cj] = fs_seed
-
-        # L_dia 与 fs 对齐
         Ldia_seed = max(s_fwd, fs_floor * Lmax)
         if Ldia_seed > L_dia[ci, cj]:
             L_dia[ci, cj] = Ldia_seed
-
-        # 记录偏心中心（顶点相对于子胞几何中心的偏移）
-        ecc_x[ci, cj] = x0 - xC
-        ecc_y[ci, cj] = y0 - yC

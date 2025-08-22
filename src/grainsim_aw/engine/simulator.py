@@ -98,6 +98,7 @@ from ..multiphysics.process import TransportProcess
 from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
 from ..io.csv_matrix import dump_matrix
+from ..engine.time_step import compute_next_dt
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,7 @@ class Simulator:
 
         t = 0.0
         step = 0
+        dt_next = dt  # 下一步使用的 Δt
 
         masks = classify_phases(self.grid)  # 约定键：liq | intf | sol
         fields = Fields.like(self.grid)
@@ -220,8 +222,6 @@ class Simulator:
                     self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
                 )
 
-                # dump_matrix(self.grid.fs, f"debug/fs1{step:06d}.csv")
-
                 masks = classify_phases(self.grid)
                 fields = Fields.like(self.grid)
 
@@ -241,6 +241,10 @@ class Simulator:
                     masks,
                 )
 
+                # dump_matrix(fields.kappa, f"debug/Kappa{step:06d}.csv")
+                # dump_matrix(fields.nx, f"debug/Nx{step:06d}.csv")
+                # dump_matrix(fields.ny, f"debug/Ny{step:06d}.csv")
+
                 # 3-6) 界面平衡固、液相浓度
                 self.itf.equilibrium(
                     self.grid,
@@ -248,6 +252,8 @@ class Simulator:
                     fields,
                     masks,
                 )
+
+                # dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
                 # 3-7) 界面法向生长速率
                 self.itf.velocity(
@@ -281,6 +287,9 @@ class Simulator:
                     self.cfg.get("temperature", {}),
                     t,
                 )
+
+                # 评估下一步 dt（与 C++ fun_delta_t 时序一致，在步末计算）
+                # dt = compute_next_dt(self.grid, fields)
 
                 # 3-11) 保存快照
                 if step % save_every == 0:

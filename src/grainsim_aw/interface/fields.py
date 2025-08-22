@@ -1,5 +1,3 @@
-# src/grainsim_aw/interface/fields.py
-# -*- coding: utf-8 -*-
 """
 IfaceFieldsBuf — 单步“界面带场”的可写缓冲。
 仅在 masks["intf"] 覆盖写入；支持复用与按上一帧界面带清零。
