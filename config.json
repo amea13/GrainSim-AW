@@ -1,7 +1,7 @@
 {
     "domain": {
-        "nx": 201,
-        "ny": 201,
+        "nx": 51,
+        "ny": 51,
         "dx": 1e-6,
         "dy": 1e-6,
         "nghost": 3,
@@ -12,8 +12,8 @@
         "C0": 0.0082
     },
     "time": {
-        "dt": 1e-4,
-        "t_end": 1,
+        "dt": 2e-4,
+        "t_end": 1e-2,
         "save_every": 100000000
     },
     "run": {
@@ -56,7 +56,7 @@
         "mdcs": {
             "gf_over_ln": 1.0,
             "fs_capture_threshold": 0,
-            "capture_seed_fs": 0.005,
+            "capture_seed_fs": 0.001,
             "neighbors": 4
         },
         "solute": {
