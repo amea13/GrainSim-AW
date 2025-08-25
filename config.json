@@ -13,7 +13,7 @@
     },
     "time": {
         "dt": 1e-4,
-        "t_end": 1.0,
+        "t_end": 0.3,
         "save_every": 100000000
     },
     "run": {
@@ -22,13 +22,13 @@
     },
     "temperature": {
         "mode": "constant",
-        "T0": 1794.15,
+        "T0": 1799.15,
         "cooling_rate": 0.0,
         "Gy": 0.0
     },
     "init": {
         "mode": "single_center",
-        "theta_deg": 0,
+        "theta_deg": 75,
         "random_theta": false,
         "N": 10,
         "edge": "north",
