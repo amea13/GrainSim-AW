@@ -28,7 +28,7 @@
     },
     "init": {
         "mode": "single_center",
-        "theta_deg": 75,
+        "theta_deg": 15,
         "random_theta": false,
         "N": 10,
         "edge": "north",
@@ -44,10 +44,7 @@
             "mL": -7800.0,
             "Gamma": 1.9e-7,
             "k0": 0.34,
-            "eps_anis": 0.04,
-            "curv_smooth": 1,
-            "store_vxy": false,
-            "store_ani": false
+            "eps_anis": 0.04
         },
         "orientation": {
             "fold": 4,

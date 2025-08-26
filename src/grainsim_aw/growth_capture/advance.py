@@ -15,56 +15,63 @@ def L_n(nx: np.ndarray, ny: np.ndarray, dx: float, dy: float) -> np.ndarray:
 
 
 def shape_factor_GF(
-    fs: np.ndarray, nx: np.ndarray, ny: np.ndarray, masks: Dict[str, np.ndarray]
+    fs: np.ndarray, theta_deg: np.ndarray, masks: Dict[str, np.ndarray]
 ) -> np.ndarray:
+    """
+    GF（度制）。θ 取“晶粒主生长方向与对角线族 {±45°} 的最小夹角”。
+    规则：有一阶固相或二阶≥2 → GF=1；无固相 → GF=0；
+          仅单一对角固相 → GF = 1 / (√2 * |cos θ_min|)。
+    """
     Ny, Nx = fs.shape
     GF = np.ones((Ny, Nx), dtype=float)
 
-    # ☆ 关键：用索引而不是 get，保证是 ndarray 而非 Optional
-    mask_sol: np.ndarray = masks["mask_sol"] if "mask_sol" in masks else masks["sol"]
-    mask_int: np.ndarray = masks["mask_int"] if "mask_int" in masks else masks["intf"]
-
-    # ☆ 保证布尔 dtype（静态检查 + 位运算都更稳）
+    mask_sol = masks["mask_sol"] if "mask_sol" in masks else masks["sol"]
+    mask_int = masks["mask_int"] if "mask_int" in masks else masks["intf"]
     if mask_sol.dtype != bool:
         mask_sol = mask_sol.astype(bool, copy=False)
     if mask_int.dtype != bool:
         mask_int = mask_int.astype(bool, copy=False)
 
-    # 轴向邻胞（roll 的参数现在是 ndarray[bool]，Pylance 不再报错）
+    # 一阶轴向邻胞
     solN = np.roll(mask_sol, 1, axis=0)
     solS = np.roll(mask_sol, -1, axis=0)
     solW = np.roll(mask_sol, 1, axis=1)
     solE = np.roll(mask_sol, -1, axis=1)
     has_primary = solN | solS | solW | solE
 
-    # 对角邻胞
+    # 二阶对角邻胞
     solNE = np.roll(np.roll(mask_sol, 1, axis=0), -1, axis=1)
     solNW = np.roll(np.roll(mask_sol, 1, axis=0), 1, axis=1)
     solSE = np.roll(np.roll(mask_sol, -1, axis=0), -1, axis=1)
     solSW = np.roll(np.roll(mask_sol, -1, axis=0), 1, axis=1)
+
     diag_count = (
         solNE.astype(np.int8)
         + solNW.astype(np.int8)
         + solSE.astype(np.int8)
         + solSW.astype(np.int8)
     )
-    mask_diag_single = (~has_primary) & (diag_count == 1)
 
+    mask_none_sol = (~has_primary) & (diag_count == 0)
+    mask_single_diag = (~has_primary) & (diag_count == 1)
+
+    # 角度：与 {±45°} 的“最小夹角”
+    th = np.deg2rad(theta_deg)
     eps = 1e-12
-    inv_sqrt2 = 1.0 / np.sqrt(2.0)
-    cos_plus = np.abs(nx + ny) * inv_sqrt2
-    cos_minus = np.abs(nx - ny) * inv_sqrt2
+    # inv_sqrt2 = 1.0  # 配合4向上风 凸归一化 去掉sqrt2
+    inv_sqrt2 = 1.0 / np.sqrt(2.0)  # 原始
+    cos_to_p45 = np.abs(np.cos(th - np.deg2rad(45.0)))
+    cos_to_m45 = np.abs(np.cos(th + np.deg2rad(45.0)))
+    cos_min_angle = np.maximum(cos_to_p45, cos_to_m45)  # cos(最小夹角) = 两者取大
+    denom = np.maximum(cos_min_angle, eps)
+    GF_single = inv_sqrt2 / denom
 
-    mask_NE_SW = mask_diag_single & (solNE ^ solSW) & ~(solNW | solSE)
-    denom_NE_SW = np.maximum(cos_minus, eps)
-    GF_NE_SW = inv_sqrt2 / denom_NE_SW
-    GF[mask_NE_SW & mask_int] = GF_NE_SW[mask_NE_SW & mask_int]
+    # 把同一个 GF 应用于“仅单一对角”的两种情形
+    tgt_single = mask_single_diag & mask_int
+    GF[tgt_single] = GF_single[tgt_single]
 
-    mask_NW_SE = mask_diag_single & (solNW ^ solSE) & ~(solNE | solSW)
-    denom_NW_SE = np.maximum(cos_plus, eps)
-    GF_NW_SE = inv_sqrt2 / denom_NW_SE
-    GF[mask_NW_SE & mask_int] = GF_NW_SE[mask_NW_SE & mask_int]
-
+    # 无固相：GF=0；非界面：GF=1
+    GF[mask_int & mask_none_sol] = 0.0
     GF[~mask_int] = 1.0
     return GF
 
@@ -103,7 +110,7 @@ def advance_interface(
     Ln = L_n(fields.nx, fields.ny, dx, dy)
 
     # 2) 形状因子 GF（降低栅格各向异性）
-    GF = shape_factor_GF(fs, fields.nx, fields.ny, masks)
+    GF = shape_factor_GF(fs, grid.theta, masks)
 
     # 3) Δf_s（界面带；单向、限幅）
     eps = 1e-30
@@ -111,6 +118,7 @@ def advance_interface(
     num = GF[mask_int] * vn[mask_int] * dt
     den = np.maximum(Ln[mask_int], eps)
     df_int = num / den
+    # df_int = num / 1e-6
     df_int = np.maximum(df_int, 0.0)
     np.minimum(df_int, 1.0 - fs[mask_int], out=df_int)
     delta_fs[mask_int] = df_int

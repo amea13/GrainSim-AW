@@ -6,13 +6,25 @@ from .geometry import compute_normal, compute_curvature
 
 
 def anisotropy_factor(
-    nx: np.ndarray, ny: np.ndarray, theta: np.ndarray, eps: float
+    nx: np.ndarray, ny: np.ndarray, theta: np.ndarray, eps: float, m: int = 4
 ) -> np.ndarray:
-    """f(phi, theta) = 1 - 15*eps*cos(4*(phi - theta))"""
+    """
+    f(φ,θ) = 1 - (m^2-1) * eps * cos[m*(φ-θ)], 其中
+      φ = atan2(ny, nx) ∈ (−π, π]
+      θ = 晶粒取向角
+    差角 δ 规约到 (−π/m, π/m]，避免周期与分支不连续带来的数值噪声。
+    """
     if eps == 0.0:
         return np.ones_like(nx, dtype=float)
-    phi = np.arctan2(ny, nx)
-    return 1.0 - 15.0 * float(eps) * np.cos(4.0 * (phi - theta))
+
+    phi = np.arctan2(ny, nx)  # (−π, π]
+
+    # 差角规约到最小等效区间 (−π/m, π/m]
+    period = 2.0 * np.pi / m  # 对 m=4，period=π/2
+    delta = phi - theta
+    delta = (delta + period / 2) % period - period / 2
+
+    return 1.0 - (m * m - 1) * float(eps) * np.cos(m * delta)
 
 
 def compute_equilibrium(
@@ -36,17 +48,17 @@ def compute_equilibrium(
     T = grid.T
     theta = grid.theta
 
-    intf: np.ndarray = masks["intf"] if "intf" in masks else masks["mask_int"]
+    intf: np.ndarray = masks["intf"]
     if intf.dtype != bool:
         intf = intf.astype(bool, copy=False)
 
     # 物性/模型参数（如未提供，给出温和默认）
     TL_eq = float(cfg.get("TL_eq", 1809.15))
-    C0 = float(cfg.get("C0", getattr(grid, "C0", 0.0)))
+    C0 = float(cfg.get("C0", getattr(grid, "C0", 0.0082)))  # 初始浓度
     mL = float(cfg.get("mL", -7800.0))  # 不能为 0
     Gamma = float(cfg.get("Gamma", 1.9e-7))
     k0 = float(cfg.get("k0", 0.34))
-    eps = float(cfg.get("eps_anis", 0.0))
+    eps = float(cfg.get("eps_anis", 0.04))
 
     # 法向/曲率：若未传入，则内部计算一次（便于独立使用）
     if normal is None:

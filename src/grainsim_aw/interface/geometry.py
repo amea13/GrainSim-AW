@@ -4,67 +4,6 @@ import numpy as np
 
 __all__ = ["compute_curvature", "compute_normal"]
 
-# =========================
-# 圆核质心法权重缓存
-# key: (d_cells, subsample) -> (WX, WY)
-# WX, WY 为一阶矩权重，在首次使用时生成并缓存
-# =========================
-_WEIGHTS_CACHE: dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
-
-
-def _generate_first_moment_weights(
-    d_cells: int, subsample: int
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    生成圆核质心法的一阶矩权重:
-      WX[a,b] 为模板格 (a,b) 在圆内子单元的 x 坐标均值
-      WY[a,b] 为模板格 (a,b) 在圆内子单元的 y 坐标均值
-    """
-    if d_cells <= 0 or d_cells % 2 == 0:
-        raise ValueError("d_cells 必须为正奇数，例如 7 或 5")
-    if subsample <= 0:
-        raise ValueError("subsample 必须为正整数，例如 8")
-
-    R = (d_cells - 1) // 2
-    K = 2 * R + 1
-    Rc = 0.5 * d_cells  # 圆半径（格宽=1）
-
-    # 子单元中心坐标，范围 [-0.5, 0.5)
-    u = (np.arange(subsample, dtype=float) + 0.5) / subsample - 0.5
-    # 预先生成 (sub, sub) 网格，后续只需平移
-    Ux, Uy = np.meshgrid(u, u, indexing="xy")  # 均为 (sub, sub)
-
-    WX = np.zeros((K, K), dtype=float)
-    WY = np.zeros((K, K), dtype=float)
-
-    for a in range(K):
-        di = a - R
-        for b in range(K):
-            dj = b - R
-            # 平移到模板格 (di, dj) 的子单元坐标
-            XX = Ux + dj
-            YY = Uy + di
-            inside = (XX * XX + YY * YY) <= (Rc * Rc)  # (sub, sub)
-
-            if inside.any():
-                # 只对圆内子单元取均值，得到一阶矩权重
-                WX[a, b] = XX[inside].mean()
-                WY[a, b] = YY[inside].mean()
-            else:
-                WX[a, b] = 0.0
-                WY[a, b] = 0.0
-
-    return WX, WY
-
-
-def _get_weights(d_cells: int, subsample: int) -> Tuple[np.ndarray, np.ndarray]:
-    key = (int(d_cells), int(subsample))
-    W = _WEIGHTS_CACHE.get(key)
-    if W is None:
-        W = _generate_first_moment_weights(*key)
-        _WEIGHTS_CACHE[key] = W
-    return W
-
 
 # =========================
 # 曲率（中心差分法）
@@ -109,7 +48,7 @@ def compute_curvature(
 
     g2 = fx * fx + fy * fy
     num = 2.0 * fx * fy * fxy - fxx * (fy * fy) - fyy * (fx * fx)
-    den = np.power(g2, 1.5) + float(cfg.get("eps_curv", 1e-30))
+    den = np.power(g2, 1.5) + 1e-30
 
     kappa_full = num / den
 
