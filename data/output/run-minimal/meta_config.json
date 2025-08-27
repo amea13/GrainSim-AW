@@ -28,7 +28,7 @@
   },
   "init": {
     "mode": "single_center",
-    "theta_deg": 15,
+    "theta_deg": 30,
     "random_theta": false,
     "N": 10,
     "edge": "north",
