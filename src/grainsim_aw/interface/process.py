@@ -14,11 +14,19 @@ class InterfaceProcess:
     def normal(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
         compute_normal(grid, masks, cfg, out_nx=fields.nx, out_ny=fields.ny)
 
-    def equilibrium(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
+    def equilibrium(
+        self,
+        grid,
+        cfg: Dict[str, Any],
+        domain_cfg: Dict[str, Any],
+        fields: Fields,
+        masks,
+    ) -> None:
         compute_equilibrium(
             grid,
             masks,
             cfg,
+            domain_cfg,
             out_cls=fields.cls,
             out_css=fields.css,
             out_ani=fields.ani,

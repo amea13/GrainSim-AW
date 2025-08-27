@@ -165,12 +165,15 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
     ecc_x = grid.ecc_x
     ecc_y = grid.ecc_y
     L_dia = grid.L_dia
+    Cs = grid.CS
+    Cl = grid.CL
 
     dx = float(grid.dx)
     dy = float(grid.dy)
     g = int(grid.nghost)
     Ny, Nx = fs.shape
     i0, j0 = _core_center_indices(grid)
+    k0 = float(cfg.get("k0", 0.34))
 
     # 1) 顶点（绝对坐标）
     verts = compute_verts(grid, masks)

@@ -21,8 +21,7 @@ def anisotropy_factor(
 
     # 差角规约到最小等效区间 (−π/m, π/m]
     period = 2.0 * np.pi / m  # 对 m=4，period=π/2
-    delta = phi - theta
-    delta = (delta + period / 2) % period - period / 2
+    delta = (phi - theta + period / 2) % period - period / 2
 
     return 1.0 - (m * m - 1) * float(eps) * np.cos(m * delta)
 
@@ -31,6 +30,7 @@ def compute_equilibrium(
     grid,
     masks: Dict[str, np.ndarray],
     cfg: Dict,
+    domain_cfg: Dict,
     normal: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     kappa: Optional[np.ndarray] = None,
     out_cls: np.ndarray | None = None,
@@ -54,7 +54,7 @@ def compute_equilibrium(
 
     # 物性/模型参数（如未提供，给出温和默认）
     TL_eq = float(cfg.get("TL_eq", 1809.15))
-    C0 = float(cfg.get("C0", getattr(grid, "C0", 0.0082)))  # 初始浓度
+    C0 = float(domain_cfg.get("C0", 0.0))  # 初始浓度
     mL = float(cfg.get("mL", -7800.0))  # 不能为 0
     Gamma = float(cfg.get("Gamma", 1.9e-7))
     k0 = float(cfg.get("k0", 0.34))
@@ -78,8 +78,6 @@ def compute_equilibrium(
         out_ani[intf] = ani[intf]
 
     # 反解 C_L^* / C_S^*
-    if abs(mL) < 1e-20:
-        mL = -1e-20
     num = (T - TL_eq) + Gamma * kappa * ani
 
     CLS = out_cls if out_cls is not None else np.zeros_like(fs, dtype=float)

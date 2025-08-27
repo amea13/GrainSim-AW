@@ -1,4 +1,3 @@
-# src/grainsim_aw/growth_capture/advance.py
 from __future__ import annotations
 from typing import Dict, Any
 import numpy as np
@@ -14,30 +13,9 @@ def L_n(nx: np.ndarray, ny: np.ndarray, dx: float, dy: float) -> np.ndarray:
     return np.where(c >= s, Ln_c_ge_s, Ln_s_gt_c)
 
 
-def L_n_p(
-    nx: np.ndarray, ny: np.ndarray, dx: float, dy: float, p: float = 1.3
-) -> np.ndarray:
-    """
-    p-范数软化的 Ln：
-      Ln ≈ h * (|nx|^p + |ny|^p)^(1/p)   （dx=dy=h）
-    非方格时做一个各向缩放，使轴向极限仍落在 dx、dy 上。
-    """
-    ax, ay = np.abs(nx), np.abs(ny)
-    q = (ax**p + ay**p) ** (1.0 / p)  # p-范数
-    if abs(dx - dy) < 1e-15:
-        return dx * q
-    s = (dx * ay + dy * ax) / (ax + ay + 1e-30)
-    return s * (q / (ax + ay + 1e-30))
-
-
 def shape_factor_GF(
-    fs: np.ndarray, theta_deg: np.ndarray, masks: Dict[str, np.ndarray]
+    fs: np.ndarray, theta_rad: np.ndarray, masks: Dict[str, np.ndarray]
 ) -> np.ndarray:
-    """
-    GF（度制）。θ 取“晶粒主生长方向与对角线族 {±45°} 的最小夹角”。
-    规则：有一阶固相或二阶≥2 → GF=1；无固相 → GF=0；
-          仅单一对角固相 → GF = 1 / (√2 * |cos θ_min|)。
-    """
     Ny, Nx = fs.shape
     GF = np.ones((Ny, Nx), dtype=float)
 
@@ -48,19 +26,18 @@ def shape_factor_GF(
     if mask_int.dtype != bool:
         mask_int = mask_int.astype(bool, copy=False)
 
-    # 一阶轴向邻胞
+    # 一阶轴向邻胞（FNNC）
     solN = np.roll(mask_sol, 1, axis=0)
     solS = np.roll(mask_sol, -1, axis=0)
     solW = np.roll(mask_sol, 1, axis=1)
     solE = np.roll(mask_sol, -1, axis=1)
-    has_primary = solN | solS | solW | solE
+    has_primary = solN | solS | solW | solE  # NFNNC > 0
 
-    # 二阶对角邻胞
+    # 二阶对角邻胞（SNNC）
     solNE = np.roll(np.roll(mask_sol, 1, axis=0), -1, axis=1)
     solNW = np.roll(np.roll(mask_sol, 1, axis=0), 1, axis=1)
     solSE = np.roll(np.roll(mask_sol, -1, axis=0), -1, axis=1)
     solSW = np.roll(np.roll(mask_sol, -1, axis=0), 1, axis=1)
-
     diag_count = (
         solNE.astype(np.int8)
         + solNW.astype(np.int8)
@@ -68,26 +45,21 @@ def shape_factor_GF(
         + solSW.astype(np.int8)
     )
 
+    # 分段：
+    # 1) NFNNC = 0 且 NSNNC = 0 → GF = 0
     mask_none_sol = (~has_primary) & (diag_count == 0)
-    mask_single_diag = (~has_primary) & (diag_count == 1)
-
-    # 角度：与 {±45°} 的“最小夹角”
-    th = np.deg2rad(theta_deg)
-    eps = 1e-12
-    # inv_sqrt2 = 1.0  # 配合4向上风 凸归一化 去掉sqrt2
-    inv_sqrt2 = 1.0 / np.sqrt(2.0)  # 原始
-    cos_to_p45 = np.abs(np.cos(th - np.deg2rad(45.0)))
-    cos_to_m45 = np.abs(np.cos(th + np.deg2rad(45.0)))
-    cos_min_angle = np.maximum(cos_to_p45, cos_to_m45)  # cos(最小夹角) = 两者取大
-    denom = np.maximum(cos_min_angle, eps)
-    GF_single = inv_sqrt2 / denom
-
-    # 把同一个 GF 应用于“仅单一对角”的两种情形
-    tgt_single = mask_single_diag & mask_int
-    GF[tgt_single] = GF_single[tgt_single]
-
-    # 无固相：GF=0；非界面：GF=1
     GF[mask_int & mask_none_sol] = 0.0
+
+    # 2) NFNNC > 0 → GF = 1 （默认已是 1）
+    # 3) NSNNC ≥ 2 → GF = 1 （默认已是 1）
+
+    # 4) 仅单一对角固相（NFNNC = 0 且 NSNNC = 1）→ GF = 1 / (√2 * cos θ_min)
+    mask_single_diag = (~has_primary) & (diag_count == 1)
+    eps = 1e-12
+    GF_single = (1.0 / np.sqrt(2.0)) / np.maximum(np.cos(theta_rad), eps)
+    GF[mask_int & mask_single_diag] = GF_single[mask_int & mask_single_diag]
+
+    # 非界面保持 1
     GF[~mask_int] = 1.0
     return GF
 
@@ -124,7 +96,6 @@ def advance_interface(
 
     # 1) Ln（法向穿越长度）
     Ln = L_n(fields.nx, fields.ny, dx, dy)
-    # Ln = L_n_p(fields.nx, fields.ny, dx, dy)
 
     # 2) 形状因子 GF（降低栅格各向异性）
     GF = shape_factor_GF(fs, grid.theta, masks)
@@ -135,7 +106,6 @@ def advance_interface(
     num = GF[mask_int] * vn[mask_int] * dt
     den = np.maximum(Ln[mask_int], eps)
     df_int = num / den
-    # df_int = num / 1e-6
     df_int = np.maximum(df_int, 0.0)
     np.minimum(df_int, 1.0 - fs[mask_int], out=df_int)
     delta_fs[mask_int] = df_int
@@ -177,8 +147,7 @@ def advance_interface_substeps(
     dt_sub = dt / M
 
     # 1) Ln 与 GF：先整场计算一次，子步内用即时掩码索引
-    Ln = L_n_p(fields.nx, fields.ny, dx, dy)
-    # Ln = L_n(fields.nx, fields.ny, dx, dy)
+    Ln = L_n(fields.nx, fields.ny, dx, dy)
     GF = shape_factor_GF(fs, grid.theta, masks)
 
     # 2) 子步推进：每个子步使用“即时界面掩码”(0<fs<1)，逐步限幅并累计

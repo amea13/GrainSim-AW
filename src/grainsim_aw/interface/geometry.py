@@ -7,7 +7,7 @@ __all__ = ["compute_curvature", "compute_normal"]
 
 # =========================
 # 曲率（中心差分法）
-# κ = (f_xx f_y^2 - 2 f_x f_y f_xy + f_yy f_x^2) / (f_x^2 + f_y^2)^(3/2)
+# κ = (2 f_x f_y f_xy -  f_xx f_y^2 - f_yy f_x^2) / (f_x^2 + f_y^2)^(3/2)
 # 只在界面带写入 out
 # =========================
 def compute_curvature(
@@ -27,8 +27,13 @@ def compute_curvature(
     intf: np.ndarray = masks["intf"]
     if intf is None:
         raise KeyError("masks 中缺少 'intf' 或 'mask_int'")
-    if intf.dtype != bool:
-        intf = intf.astype(bool, copy=False)
+    intf = np.asarray(intf, dtype=bool)
+
+    # 仅 core 区域参与写入，避免 ghost 受 roll 影响
+    ys, xs = grid.core
+    core_mask = np.zeros_like(intf, dtype=bool)
+    core_mask[ys, xs] = True
+    write_mask = intf & core_mask
 
     roll = np.roll
 
@@ -54,7 +59,7 @@ def compute_curvature(
 
     if out is None:
         out = np.zeros_like(fs, dtype=float)
-    out[intf] = kappa_full[intf]
+    out[write_mask] = kappa_full[write_mask]
     return out
 
 
@@ -63,7 +68,6 @@ def compute_curvature(
 # n = - (num_x, num_y) / |(num_x, num_y)|
 # 只在界面带写入 out_nx/out_ny
 # =========================
-# 如果需要更简洁的版本，可以这样写：
 def compute_normal(
     grid,
     masks: Dict[str, np.ndarray],

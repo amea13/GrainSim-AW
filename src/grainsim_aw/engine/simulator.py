@@ -10,43 +10,22 @@
 - cfg: dict
   运行配置字典。推荐结构如下，字段名与默认值仅作参考，具体以各子模块实现为准。
 
-配置示例（JSON 语义）
---------------------
-{
-  "domain": {
-    "nx": 256, "ny": 256,
-    "dx": 1.0e-6, "dy": 1.0e-6,
-    "bc": { "x": "periodic", "y": "wall" },
-    "C0": 0.02
-  },
-  "time": {
-    "dt": 2.0e-4,
-    "t_end": 16.0,
-    "save_every": 50
-  },
-  "run": {
-    "seed": 42,
-    "output_dir": "data/output/run-minimal"
-  },
-  "viz": {
-    "live": { "enable": true, "interval": 1 }
-  },
-  "init": {
-    "mode": "random",
-    "count": 20,
-    "k0": 0.34
-  },
-  "nucleation": { "rate": 1.0, "sigma": 0.1 },
-  "physics": {
-    "interface": { "k0": 0.34 },
-    "mdcs": { "capture_radius": 1.0 },
-    "solute": { "scheme": "jacobi", "max_iter": 200, "tol": 1e-8 }
-  },
-  "temperature": {
-    "mode": "table",
-    "T0": 1800.0
-  }
-}
+【配置示例（TOML）】
+[domain]
+nx=256; ny=256; dx=1e-6; dy=1e-6
+[domain.bc] x="neumann0"; y="neumann0"
+
+[time] dt=2e-4; t_end=16.0; save_every=50
+[run] seed=42; output_dir="data/output/run-minimal"
+
+[viz.live]
+enabled=true
+stride=50
+
+[init]
+mode="random"
+count=20
+k0=0.34
 
 【输出】
 - run() 期间：
@@ -64,12 +43,12 @@
 主循环（run）十二步：
   1. 更新 ghosts 与相掩码
   2. Thevoz 形核
-  3. ESVC 几何与捕捉
-  4. 计算曲率
-  5. 计算法向（圆质心法）
-  6. 界面平衡固、液相浓度
-  7. 界面法向生长速率
-  8. 推进固相率与 ESVC 半对角线，得到 fs_dot
+  3. 计算曲率
+  4. 计算法向（圆质心法）
+  5. 界面平衡固、液相浓度
+  6. 界面法向生长速率
+  7. 推进固相率与 ESVC 半对角线，得到 fs_dot
+  8. ESVC 几何与捕捉
   9. 溶质场一步
   10. 温度更新
   11. 保存快照
@@ -88,6 +67,9 @@ import numpy as np
 from ..core.grid import create_grid, update_ghosts, classify_phases, Grid
 from ..interface.fields import IfaceFieldsBuf as Fields
 
+# --- 时间推进 ---
+from ..engine.time_step import compute_next_dt
+
 # --- 过程门面类（各包的 process.py 提供） ---
 from ..nucleation.process import NucleationProcess
 from ..growth_capture.process import GrowthProcess
@@ -97,8 +79,9 @@ from ..multiphysics.process import TransportProcess
 # --- 可视化与输出 ---
 from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
-from ..io.csv_matrix import dump_matrix
-from ..engine.time_step import compute_next_dt
+
+# from ..io.csv_matrix import dump_matrix
+
 
 logger = logging.getLogger(__name__)
 
@@ -157,12 +140,12 @@ class Simulator:
 
         # 3) 可选：手动初始形核
         self.nuc = NucleationProcess()
-        init_cfg = dict(cfg.get("init", {}))
-        init_cfg.setdefault(
-            "k0",
-            float(cfg.get("physics", {}).get("interface", {}).get("k0", 0.34)),
-        )
-        if init_cfg:
+        if "init" in cfg and cfg["init"]:  # 仅当用户真的提供了 init 段
+            init_cfg = dict(cfg["init"])
+            init_cfg.setdefault(
+                "k0",
+                float(cfg.get("physics", {}).get("interface", {}).get("k0", 0.34)),
+            )
             self.nuc.seed_manual(self.grid, self.rng, init_cfg)
 
         # 4) 实时可视化初始化
@@ -192,7 +175,6 @@ class Simulator:
 
         t = 0.0
         step = 0
-        dt_next = dt  # 下一步使用的 Δt
 
         masks = classify_phases(self.grid)  # 约定键：liq | intf | sol
         fields = Fields.like(self.grid)
@@ -208,6 +190,8 @@ class Simulator:
 
                 # 3-1) 更新 ghosts 与相掩码
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
+                fields.reset(masks["intf"])
+                masks = classify_phases(self.grid)
 
                 # 3-2) Thevoz 形核
                 self.nuc.nucleate(
@@ -217,15 +201,7 @@ class Simulator:
                 # dump_matrix(self.grid.fs, f"debug/fs0{step:06d}.csv")
                 # dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
 
-                # 3-3) ESVC 几何与捕捉
-                self.gro.geometry_and_capture(
-                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
-                )
-
-                masks = classify_phases(self.grid)
-                fields = Fields.like(self.grid)
-
-                # 3-4) 计算曲率
+                # 3-3) 计算曲率
                 self.itf.curvature(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),
@@ -233,7 +209,7 @@ class Simulator:
                     masks,
                 )
 
-                # 3-5) 计算法向（圆质心法）
+                # 3-4) 计算法向（圆质心法）
                 self.itf.normal(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),
@@ -245,17 +221,18 @@ class Simulator:
                 # dump_matrix(fields.nx, f"debug/Nx{step:06d}.csv")
                 # dump_matrix(fields.ny, f"debug/Ny{step:06d}.csv")
 
-                # 3-6) 界面平衡固、液相浓度
+                # 3-5) 界面平衡固、液相浓度
                 self.itf.equilibrium(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),
+                    self.cfg.get("domain", {}),
                     fields,
                     masks,
                 )
 
                 # dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
-                # 3-7) 界面法向生长速率
+                # 3-6) 界面法向生长速率
                 self.itf.velocity(
                     self.grid,
                     self.cfg.get("physics", {}).get("interface", {}),
@@ -263,7 +240,7 @@ class Simulator:
                     masks,
                 )
 
-                # 3-8) 推进固相，更新 fs 与 ESVC 半对角线，得到 fs_dot
+                # 3-7) 推进固相，更新 fs 与 ESVC 半对角线，得到 fs_dot
                 self.gro.advance_solid(
                     self.grid,
                     fields.vn,
@@ -271,6 +248,11 @@ class Simulator:
                     self.cfg.get("physics", {}).get("mdcs", {}),
                     fields,
                     masks,
+                )
+
+                # 3-8) ESVC 几何与捕捉
+                self.gro.geometry_and_capture(
+                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
                 )
 
                 # 3-9) 溶质场一步
@@ -288,7 +270,7 @@ class Simulator:
                     t,
                 )
 
-                # 评估下一步 dt（与 C++ fun_delta_t 时序一致，在步末计算）
+                # 评估下一步 dt
                 # dt = compute_next_dt(self.grid, fields)
 
                 # 3-11) 保存快照
@@ -296,12 +278,21 @@ class Simulator:
                     snapshot(self.grid, t, step, self.out)
 
                 # 3-12) 刷新可视化
-                if self.live:
+                if self.live and (step % self.live.stride == 0):
                     self.live.update(self.grid, t, step)
 
             # 循环结束后保存一次
             snapshot(self.grid, t, step, self.out)
 
-        finally:
+        except Exception:
+            logger.exception("运行异常，保存事故快照以便排查")
+            try:
+                snapshot(self.grid, t, step, self.out)
+            finally:
+                if self.live:
+                    self.live.close()
+            raise
+
+        else:
             if self.live:
                 self.live.close()

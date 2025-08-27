@@ -1,10 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass
-import numpy as np
+from typing import Dict, Optional
 from typing import Dict
+from typing import Mapping, Union
+import numpy as np
 
 
-@dataclass
+@dataclass(slots=True)
 class Grid:
     # ——持久字段（入快照/重启）——
     fs: np.ndarray  # 固相体积分数 [0,1]，float64
@@ -23,6 +25,10 @@ class Grid:
     dx: float
     dy: float
     nghost: int
+
+    # —— 相阈值（用于三态掩码）——
+    tau_liq: float = 1e-12
+    tau_sol: float = 1.0 - 1e-12
 
     # —— 便捷属性 ——
     @property
@@ -55,6 +61,8 @@ def create_grid(domain_cfg: dict) -> Grid:
     ny, nx = int(domain_cfg["ny"]), int(domain_cfg["nx"])
     dx, dy = float(domain_cfg["dx"]), float(domain_cfg["dy"])
     g = int(domain_cfg.get("nghost", 3))
+    tau_liq = float(domain_cfg.get("tau_liq", 1e-12))
+    tau_sol = float(domain_cfg.get("tau_sol", 1.0 - 1e-12))
 
     # 持久字段统一初始化
     fs = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
@@ -75,74 +83,87 @@ def create_grid(domain_cfg: dict) -> Grid:
         theta=th,
         L_dia=Ldia,
         T=T,
+        ecc_x=ecc_x,
+        ecc_y=ecc_y,
         ny=ny,
         nx=nx,
         dx=dx,
         dy=dy,
         nghost=g,
-        ecc_x=ecc_x,
-        ecc_y=ecc_y,
+        tau_liq=tau_liq,
+        tau_sol=tau_sol,
     )
 
 
-def update_ghosts(grid: Grid, bc: str = "neumann0"):
-    """极简版：只支持 neumann0(镜像)。"""
+def update_ghosts(grid: Grid, bc: Union[str, Mapping[str, str]] = "neumann0") -> None:
+    """
+    更新 ghost 带。
+    支持：
+      - "neumann0"：零法向梯度（偶延拓）
+      - "periodic"：周期
+    允许传入 dict：{"x": "...", "y": "..."} 分轴设置；未提供的轴沿用 "neumann0"。
+    """
     g = grid.nghost
     if g == 0:
         return
+
+    if isinstance(bc, str):
+        bcx = bcy = bc
+    else:
+        bcx = bc.get("x", "neumann0")
+        bcy = bc.get("y", "neumann0")
+
+    # 需要处理的字段（若有不希望周期的字段，可在此排除或分开处理）
     fields = (grid.fs, grid.CL, grid.CS, grid.grain_id, grid.theta, grid.L_dia, grid.T)
+
     for arr in fields:
-        # 上下
-        arr[:g, :] = arr[g : 2 * g, :]
-        arr[-g:, :] = arr[-2 * g : -g, :]
-        # 左右
-        arr[:, :g] = arr[:, g : 2 * g]
-        arr[:, -g:] = arr[:, -2 * g : -g]
+        # 垂直方向（y）
+        if bcy == "neumann0":
+            # 顶部 ghost：取 [g:2g] 反向
+            arr[:g, :] = arr[g : 2 * g, :][::-1, :]
+            # 底部 ghost：取 [-2g:-g] 反向
+            arr[-g:, :] = arr[-2 * g : -g, :][::-1, :]
+        elif bcy == "periodic":
+            arr[:g, :] = arr[-2 * g : -g, :]
+            arr[-g:, :] = arr[g : 2 * g, :]
+        else:
+            raise ValueError(f"不支持的 y 方向边界：{bcy!r}")
+
+        # 水平方向（x）
+        if bcx == "neumann0":
+            arr[:, :g] = arr[:, g : 2 * g][:, ::-1]
+            arr[:, -g:] = arr[:, -2 * g : -g][:, ::-1]
+        elif bcx == "periodic":
+            arr[:, :g] = arr[:, -2 * g : -g]
+            arr[:, -g:] = arr[:, g : 2 * g]
+        else:
+            raise ValueError(f"不支持的 x 方向边界：{bcx!r}")
 
 
 def classify_phases(
-    grid, tau_liq: float = 1e-12, tau_sol: float = 1.0 - 1e-12
+    grid,
+    tau_liq: Optional[float] = None,
+    tau_sol: Optional[float] = None,
 ) -> Dict[str, np.ndarray]:
-    """
-    【功能】基于 grid.fs 的三态掩码（液/界/固），返回包含 ghost 的布尔数组。
-          统计或积分时请只在 core 区域使用这些掩码（例如 grid.core 或自行切片）。
-
-    【输入】
-    - grid: Grid
-      需至少提供属性：
-        - fs: np.ndarray   固相率场，shape=(ny, nx)
-        - nghost: int      ghost 层厚度（仅用于调用方裁剪 core）
-        - （可选）tau_liq/tau_sol: float 若 Grid 定义了，可覆盖默认阈值
-    - tau_liq: float       视为“液相”的上阈（默认 1e-12）
-    - tau_sol: float       视为“固相”的下阈（默认 1-1e-12）
-
-    【输出】
-    - masks: dict[str, np.ndarray]  （包含 ghost）
-        必含键：
-          - "mask_liq" | "mask_int" | "mask_sol"  # 保持你现有命名
-        额外提供等价别名（便于新代码更简洁）：
-          - "liq" | "intf" | "sol"
-
-    【数值说明】
-    - 阈值用于把 fs∈[0,1] 粗分为液/界/固；界面带 = ~(liq | sol)。
-    - 若 grid 定义了 grid.tau_liq / grid.tau_sol，则优先使用之。
-    """
-    # 允许 Grid 覆盖默认阈值
-    tl = getattr(grid, "tau_liq", tau_liq)
-    ts = getattr(grid, "tau_sol", tau_sol)
+    """返回包含 ghost 的三态掩码：'liq' | 'intf' | 'sol'。"""
+    tl = float(grid.tau_liq if tau_liq is None else tau_liq)
+    ts = float(grid.tau_sol if tau_sol is None else tau_sol)
 
     fs = grid.fs
     mask_liq = fs < tl
     mask_sol = fs > ts
     mask_int = ~(mask_liq | mask_sol)
 
-    masks = {
+    # 保证布尔 dtype（以防上游传奇怪类型）
+    mask_liq = np.asarray(mask_liq, dtype=bool)
+    mask_sol = np.asarray(mask_sol, dtype=bool)
+    mask_int = np.asarray(mask_int, dtype=bool)
+
+    return {
         "mask_liq": mask_liq,
-        "mask_int": mask_int,
-        "mask_sol": mask_sol,
-        # 别名（等价引用，不额外拷贝）
         "liq": mask_liq,
+        "mask_int": mask_int,
         "intf": mask_int,
+        "mask_sol": mask_sol,
         "sol": mask_sol,
     }
-    return masks

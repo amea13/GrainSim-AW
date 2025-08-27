@@ -1,39 +1,29 @@
-"""
-IfaceFieldsBuf — 单步“界面带场”的可写缓冲。
-仅在 masks["intf"] 覆盖写入；支持复用与按上一帧界面带清零。
-"""
-
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import Iterable, Optional
 import numpy as np
 
+FloatArr = np.ndarray  # 仅做可读性标签
 
-@dataclass
+
+@dataclass(slots=True)
 class IfaceFieldsBuf:
-    """
-    【功能】承载单步界面带相关场，由各过程函数“就地写入”。
-    【形状】所有数组与 grid.fs 一致；界面带外通常为 0。
-    """
+    kappa: FloatArr
+    nx: FloatArr
+    ny: FloatArr
+    cls: FloatArr
+    css: FloatArr
+    vn: FloatArr
+    fs_dot: FloatArr
+    vx: FloatArr
+    vy: FloatArr
+    ani: FloatArr
 
-    # 几何/界面量
-    kappa: np.ndarray  # 曲率
-    nx: np.ndarray  # 法向 x
-    ny: np.ndarray  # 法向 y
-    cls: np.ndarray  # 界面液相浓度 C_L^*
-    css: np.ndarray  # 界面固相浓度 C_S^*
-    vn: np.ndarray  # 法向生长速率
-    fs_dot: np.ndarray  # 固相率时间导数（溶质源项）
-    vx: np.ndarray  # 法向 x 速度分量
-    vy: np.ndarray  # 法向 y 速度分量
-    ani: np.ndarray  # 各向异性诊断量
-
-    # —— 工厂与维护 —— #
+    # —— 工厂 —— #
     @staticmethod
-    def like(
-        grid,
-    ) -> "IfaceFieldsBuf":
-        z = lambda: np.zeros_like(grid.fs)
-        buf = IfaceFieldsBuf(
+    def like(grid) -> "IfaceFieldsBuf":
+        z = lambda: np.zeros_like(grid.fs, dtype=np.float64, order="C")
+        return IfaceFieldsBuf(
             kappa=z(),
             nx=z(),
             ny=z(),
@@ -45,4 +35,76 @@ class IfaceFieldsBuf:
             vy=z(),
             ani=z(),
         )
-        return buf
+
+    # —— 校验与维护 —— #
+    def __post_init__(self) -> None:
+        shape = self.kappa.shape
+        # 所有数组形状一致、连续、float64
+        for name, a in self._named_arrays():
+            if a.shape != shape:
+                raise ValueError(f"{name} shape {a.shape} != {shape}")
+            if a.dtype != np.float64:
+                raise TypeError(f"{name} dtype {a.dtype} != float64")
+            # 确保 C 连续，避免后续 ravel 索引慢
+            if not a.flags.c_contiguous:
+                setattr(self, name, np.ascontiguousarray(a, dtype=np.float64))
+
+    def _arrays(self) -> Iterable[FloatArr]:
+        return (
+            self.kappa,
+            self.nx,
+            self.ny,
+            self.cls,
+            self.css,
+            self.vn,
+            self.fs_dot,
+            self.vx,
+            self.vy,
+            self.ani,
+        )
+
+    def _named_arrays(self) -> Iterable[tuple[str, FloatArr]]:
+        return (
+            ("kappa", self.kappa),
+            ("nx", self.nx),
+            ("ny", self.ny),
+            ("cls", self.cls),
+            ("css", self.css),
+            ("vn", self.vn),
+            ("fs_dot", self.fs_dot),
+            ("vx", self.vx),
+            ("vy", self.vy),
+            ("ani", self.ani),
+        )
+
+    # —— 清零 —— #
+    def clear_all(self) -> None:
+        for a in self._arrays():
+            a.fill(0.0)
+
+    def reset(
+        self, mask: Optional[np.ndarray], *, sparse_threshold: float = 0.25
+    ) -> None:
+        """
+        按上一帧界面带清零；mask 为 None 时整场清零。
+        对稀疏 mask 采用“索引表 + ravel 赋值”，减少布尔筛选开销；
+        对稠密 mask 走布尔索引更快。
+        """
+        if mask is None:
+            self.clear_all()
+            return
+
+        mask = np.asarray(mask, dtype=bool)
+        if mask.ndim != 2 or mask.shape != self.kappa.shape:
+            raise ValueError(f"mask shape {mask.shape} != {self.kappa.shape}")
+
+        density = float(mask.mean())  # True 占比
+        if density <= sparse_threshold:
+            idx = np.flatnonzero(mask.ravel())
+            if idx.size == 0:
+                return
+            for a in self._arrays():
+                a.ravel()[idx] = 0.0
+        else:
+            for a in self._arrays():
+                a[mask] = 0.0
