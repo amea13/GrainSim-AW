@@ -3,13 +3,13 @@
 
 
 ```
-```
 GrainSim-AW
 ├─ config.json
 ├─ data
 │  └─ output
 │     └─ run-minimal
-├─ debug
+│        ├─ meta_config.json
+│        └─ step_003001.npz
 ├─ docs
 │  ├─ api
 │  │  ├─ data_model.md
@@ -36,14 +36,15 @@ GrainSim-AW
 │     │  └─ __init__.py
 │     ├─ errors.py
 │     ├─ growth_capture
-│     │  ├─ capture_rules.py
-│     │  ├─ geometry.py
-│     │  ├─ kernels.py
-│     │  ├─ mdcs.py
+│     │  ├─ advance.py
+│     │  ├─ capture.py
+│     │  ├─ process.py
 │     │  └─ __init__.py
 │     ├─ interface
-│     │  ├─ anisotropy.py
 │     │  ├─ equilibrium.py
+│     │  ├─ fields.py
+│     │  ├─ geometry.py
+│     │  ├─ process.py
 │     │  ├─ velocity.py
 │     │  └─ __init__.py
 │     ├─ io
@@ -53,10 +54,12 @@ GrainSim-AW
 │     ├─ logging_config.py
 │     ├─ main.py
 │     ├─ multiphysics
+│     │  ├─ process.py
 │     │  ├─ solute_solver.py
 │     │  ├─ temperature_adapter.py
 │     │  └─ __init__.py
 │     ├─ nucleation
+│     │  ├─ process.py
 │     │  ├─ seeding.py
 │     │  ├─ thevoz.py
 │     │  └─ __init__.py
@@ -67,10 +70,29 @@ GrainSim-AW
 │     │  └─ __init__.py
 │     └─ __init__.py
 └─ tests
-   ├─ test_acceptance_basic.py
-   ├─ test_liq_diffusion_1d.py
-   ├─ test_seeding_init.py
-   ├─ test_solute_min.py
-   └─ vis_solute_case3.py
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

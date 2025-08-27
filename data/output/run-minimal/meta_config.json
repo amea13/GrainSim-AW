@@ -5,11 +5,11 @@
     "dx": 1e-06,
     "dy": 1e-06,
     "nghost": 3,
+    "C0": 0.0082,
     "bc": {
       "x": "neumann0",
       "y": "neumann0"
-    },
-    "C0": 0.0082
+    }
   },
   "time": {
     "dt": 0.0001,
@@ -89,6 +89,7 @@
         "fs"
       ],
       "percentile": 99.0,
+      "keep_open": true,
       "ranges": {
         "fs": [
           0.0,
@@ -98,8 +99,7 @@
           0.008,
           0.01
         ]
-      },
-      "keep_open": true
+      }
     }
   }
 }

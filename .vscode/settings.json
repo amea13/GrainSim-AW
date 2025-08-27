@@ -1,0 +1,20 @@
+{
+    "[toml]": {
+        "editor.defaultFormatter": "tamasfe.even-better-toml",
+        "editor.formatOnSave": true,
+        "editor.tabSize": 2
+    },
+    // 让编辑器在粘贴时自动重算缩进（不依赖格式化器）
+    "editor.autoIndent": "full",
+    // 让格式化器在粘贴时也跑一下（可选，但最稳）
+    "editor.formatOnPaste": true,
+    // Python 专用（可覆盖全局）
+    "[python]": {
+        "editor.autoIndent": "full",
+        "editor.formatOnPaste": true
+    },
+    // 保持一致的 4 空格缩进，避免 Tab/Space 混用干扰
+    "editor.detectIndentation": false,
+    "editor.insertSpaces": true,
+    "editor.tabSize": 4
+}
