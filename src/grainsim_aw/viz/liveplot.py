@@ -1,9 +1,7 @@
-# src/grainsim_aw/viz/liveplot.py
 from __future__ import annotations
 from typing import Dict, Tuple, Optional, Sequence
 
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.image import AxesImage
@@ -29,7 +27,7 @@ class LivePlotter:
         self.enabled: bool = bool(cfg.get("enabled", True))
         self.stride: int = int(cfg.get("stride", 10))
         self.fields: Sequence[str] = tuple(
-            cfg.get("fields", ("T", "CL", "grain_id", "fs"))
+            cfg.get("fields", ("CS", "CL", "grain_id", "fs"))
         )
         self.percentile: float = float(cfg.get("percentile", 99.0))
         self.figsize = tuple(cfg.get("figsize", (10, 8)))
@@ -65,8 +63,8 @@ class LivePlotter:
         return float(lo), float(hi)
 
     def _extract(self, grid, field: str) -> np.ndarray:
-        if field == "T":
-            return self._core(grid.T, grid)
+        if field == "CS":
+            return self._core(grid.CS, grid)
         if field == "CL":
             return self._core(grid.CL, grid)
         if field == "fs":

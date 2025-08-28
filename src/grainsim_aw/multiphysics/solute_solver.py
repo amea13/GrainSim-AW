@@ -5,8 +5,8 @@
 【控制方程】（单一网格双变量，五点格式）
   令 α = 1 - f_s （液相体积分数），在零法向通量边界（Neumann）下：
     d( α C_L )/dt = ∇·( α D_L ∇C_L ) + S_pair
-    d( (1-α) C_S )/dt = ∇·( (1-α) D_S ∇C_S ) - S_pair
-  其中成对源项 S_pair = (1 - k) * C_L^n * df_s/dt
+    d( (1-α) C_S )/dt = ∇·( (1-α) D_S ∇C_S )
+  其中源项 S_pair = (1 - k) * C_L^n * df_s/dt
 
 【时间离散】
   - 扩散与积累项：后向欧拉（系数取 t^{n+1}，即推进 fs 后）
@@ -133,7 +133,7 @@ def step_solute(
     grid,
     cfg: Dict,
     dt: float,
-    CL_star: np.ndarray,  # 界面液相平衡浓度 C_L^*（来自 equilibrium）
+    masks: Dict[str, np.ndarray],
     fs_dot: np.ndarray,  # 本步固相率时间导数（来自界面推进）
 ) -> None:
     """
@@ -175,9 +175,9 @@ def step_solute(
     DL = Dl_from_T(T)
     DS = Ds_from_T(T)
 
-    # 复合扩散率 Γ = 相分数 * D
+    solid_mask = fs_np1 == 1.0
     GammaL = alpha_np1 * DL
-    GammaS = fs_np1 * DS
+    GammaS = DS * solid_mask.astype(float)
 
     # 面导通系数（core 形状）
     GeL, GwL, GnL, GsL = _build_conductance(GammaL, dx, dy, g)
@@ -186,8 +186,7 @@ def step_solute(
     # 成对源（core）
     fs_dot_c = fs_dot[ys, xs]
     CL_old_c = CL_old[ys, xs]
-    CL_star_c = CL_star[ys, xs]
-    S_pair = (1.0 - k) * CL_star_c * fs_dot_c  # 单位：1/时间
+    S_pair = (1.0 - k) * CL_old_c * fs_dot_c  # 单位：1/时间
 
     # 液相线性系统：aP_L * CL^{n+1} = b_L + ∑ G * 邻居
     alpha_np1_c = alpha_np1[ys, xs]
@@ -196,15 +195,16 @@ def step_solute(
     b_L = alpha_n_c * CL_old_c * Vc / dt + S_pair * Vc
 
     # 固相线性系统
-    fs_np1_c = fs_np1[ys, xs]
     fs_n_c = fs_n[ys, xs]
-    aP_S = fs_np1_c * Vc / dt + (GeS + GwS + GnS + GsS)
-    b_S = fs_n_c * CS_old[ys, xs] * Vc / dt - S_pair * Vc
+    CS_old_c = CS_old[ys, xs]
+    solid_mask_c = solid_mask[ys, xs].astype(float)
+    aP_S = solid_mask_c * (Vc / dt) + (GeS + GwS + GnS + GsS)
+    b_S = solid_mask_c * (fs_n_c * CS_old_c * Vc / dt)
 
     # 仅在“活跃区”求解（跳过近似纯相单元）
     eps = float(cfg.get("eps", 1e-12))
     active_L = alpha_np1_c > eps
-    active_S = fs_np1_c > eps
+    active_S = solid_mask[ys, xs]
 
     # 迭代参数
     solver = cfg.get("solver", {})
@@ -213,7 +213,7 @@ def step_solute(
 
     # 初值（取 t^n）
     CL_c = CL_old_c.copy()
-    CS_c = CS_old[ys, xs].copy()
+    CS_c = CS_old_c.copy()
 
     # Jacobi 迭代求解
     CL_c = _jacobi_sweep(

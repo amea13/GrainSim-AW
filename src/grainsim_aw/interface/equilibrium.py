@@ -31,11 +31,10 @@ def compute_equilibrium(
     masks: Dict[str, np.ndarray],
     cfg: Dict,
     domain_cfg: Dict,
-    normal: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-    kappa: Optional[np.ndarray] = None,
+    normal: Tuple[np.ndarray, np.ndarray],
+    kappa: np.ndarray,
     out_cls: np.ndarray | None = None,
     out_css: np.ndarray | None = None,
-    out_ani: np.ndarray | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     依据局部平衡 T = T* 反解 C_L^* 与 C_S^*：
@@ -61,21 +60,10 @@ def compute_equilibrium(
     eps = float(cfg.get("eps_anis", 0.04))
 
     # 法向/曲率：若未传入，则内部计算一次（便于独立使用）
-    if normal is None:
-        nx_tmp = np.zeros_like(fs, dtype=float)
-        ny_tmp = np.zeros_like(fs, dtype=float)
-        compute_normal(grid, masks, {}, out_nx=nx_tmp, out_ny=ny_tmp)
-        normal = (nx_tmp, ny_tmp)
     nx, ny = normal
-
-    if kappa is None:
-        kappa = np.zeros_like(fs, dtype=float)
-        compute_curvature(grid, masks, {}, out=kappa)
 
     # 各向异性因子
     ani = anisotropy_factor(nx, ny, theta, eps)
-    if out_ani is not None:
-        out_ani[intf] = ani[intf]
 
     # 反解 C_L^* / C_S^*
     num = (T - TL_eq) + Gamma * kappa * ani
@@ -85,5 +73,6 @@ def compute_equilibrium(
 
     CLS[intf] = C0 + num[intf] / mL
     CSS[intf] = k0 * CLS[intf]
+    grid.CS[intf] = k0 * CLS[intf]
 
     return CLS, CSS

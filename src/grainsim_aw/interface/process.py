@@ -27,9 +27,10 @@ class InterfaceProcess:
             masks,
             cfg,
             domain_cfg,
+            normal=(fields.nx, fields.ny),
+            kappa=fields.kappa,
             out_cls=fields.cls,
             out_css=fields.css,
-            out_ani=fields.ani,
         )
 
     def velocity(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:

@@ -4,7 +4,7 @@ import numpy as np
 from ..core.material import Dl_from_T, Ds_from_T
 
 
-def compute_velocity(
+def compute_velocity1(
     grid,
     cfg: Dict,
     masks: Dict[str, np.ndarray],
@@ -107,7 +107,7 @@ def compute_velocity(
     return Vn, Vx, Vy
 
 
-def compute_velocity1(
+def compute_velocity(
     grid,
     cfg: Dict,
     masks: Dict[str, np.ndarray],
@@ -119,10 +119,14 @@ def compute_velocity1(
     out_vy: Optional[np.ndarray] = None,
 ):
     """
-    文献式(11)(12)：先计算 Vx、Vy，再合成 Vn = Vx*|cosφ| + Vy*|sinφ|。
+    先计算 Vx、Vy，再合成 Vn = Vx*nx + Vy*ny。
     注意：这里的“w/E/S/N”是西/东/南/北邻胞；fs 为固相体积分数。
     """
     nx, ny = normal
+    n2 = nx * nx + ny * ny
+    invn = 1.0 / np.sqrt(np.maximum(n2, 1e-18))
+    nxu = nx * invn
+    nyu = ny * invn
 
     CL_star, CS_star = eq
 
@@ -161,31 +165,28 @@ def compute_velocity1(
     denom_x = dx * np.maximum((1.0 - k0) * CL_star, eps)
     denom_y = dy * np.maximum((1.0 - k0) * CL_star, eps)
 
-    termS_x = DS * ((CS_star - CS_W) * fs_W + (CS_star - CS_E) * fs_E)
-    termL_x = DL * ((CL_star - CL_W) * (1.0 - fs_W) + (CL_star - CL_E) * (1.0 - fs_E))
-    Vx = (termS_x + termL_x) / denom_x
+    # 单侧速度（别先相加）
+    Vx_E = (DS * (CS_star - CS_E) * fs_E + DL * (CL_star - CL_E) * (1 - fs_E)) / denom_x
+    Vx_W = (DS * (CS_star - CS_W) * fs_W + DL * (CL_star - CL_W) * (1 - fs_W)) / denom_x
+    Vy_N = (DS * (CS_star - CS_N) * fs_N + DL * (CL_star - CL_N) * (1 - fs_N)) / denom_y
+    Vy_S = (DS * (CS_star - CS_S) * fs_S + DL * (CL_star - CL_S) * (1 - fs_S)) / denom_y
 
-    termS_y = DS * ((CS_star - CS_S) * fs_S + (CS_star - CS_N) * fs_N)
-    termL_y = DL * ((CL_star - CL_S) * (1.0 - fs_S) + (CL_star - CL_N) * (1.0 - fs_N))
-    Vy = (termS_y + termL_y) / denom_y
+    # 按法向选择迎风一侧
+    Vx_sel = np.where(nxu >= 0.0, Vx_E, Vx_W)
+    Vy_sel = np.where(nyu >= 0.0, Vy_N, Vy_S)
 
-    # 只在界面上有效
-    if not (mask_int.dtype == bool):
-        mask_int = mask_int.astype(bool, copy=False)
-    Vx = np.where(mask_int, Vx, 0.0)
-    Vy = np.where(mask_int, Vy, 0.0)
+    # 只允许生长可在这里截断
+    Vx_sel = np.maximum(Vx_sel, 0.0)
+    Vy_sel = np.maximum(Vy_sel, 0.0)
 
-    # 合成法向速度：|cosφ|=|nx|/||n||，|sinφ|=|ny|/||n||
-    nlen = np.sqrt(nx * nx + ny * ny) + eps
-    cphi = np.abs(nx) / nlen
-    sphi = np.abs(ny) / nlen
-    Vn = Vx * cphi + Vy * sphi
+    # 合成法向速度：用 |n| 当权重
+    Vn = np.where(mask_int, np.abs(nxu) * Vx_sel + np.abs(nyu) * Vy_sel, 0.0)
 
     if out_vx is not None:
-        out_vx[...] = Vx
+        out_vx[...] = Vx_sel
     if out_vy is not None:
-        out_vy[...] = Vy
+        out_vy[...] = Vy_sel
     if out_vn is not None:
         out_vn[...] = Vn
     else:
-        return Vn, Vx, Vy
+        return Vn, Vx_sel, Vy_sel

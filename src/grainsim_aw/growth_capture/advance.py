@@ -55,8 +55,7 @@ def shape_factor_GF(
 
     # 4) 仅单一对角固相（NFNNC = 0 且 NSNNC = 1）→ GF = 1 / (√2 * cos θ_min)
     mask_single_diag = (~has_primary) & (diag_count == 1)
-    eps = 1e-12
-    GF_single = (1.0 / np.sqrt(2.0)) / np.maximum(np.cos(theta_rad), eps)
+    GF_single = (1.0 / np.sqrt(2.0)) / np.cos(theta_rad)
     GF[mask_int & mask_single_diag] = GF_single[mask_int & mask_single_diag]
 
     # 非界面保持 1
@@ -67,10 +66,9 @@ def shape_factor_GF(
 def update_Ldia(grid, delta_fs: np.ndarray, theta: np.ndarray) -> None:
     """Δf_s 推进偏心正方形半对角线 L_dia：ΔL = Δf_s * (dx / max(|sinθ|,|cosθ|))."""
     dx = float(grid.dx)
-    eps = 1e-12
     s = np.abs(np.sin(theta))
-    c = np.abs(np.cos(theta))
-    denom = np.maximum(np.maximum(s, c), eps)
+    c = np.cos(theta)
+    denom = np.maximum(s, c)
     Ldia_max = dx / denom
     grid.L_dia += delta_fs * Ldia_max
     np.minimum(grid.L_dia, Ldia_max, out=grid.L_dia)
@@ -90,6 +88,7 @@ def advance_interface(
     """
     fs = grid.fs
     mask_int = masks.get("intf")
+    k0 = float(cfg.get("k0", 0.34))
 
     dx = float(grid.dx)
     dy = float(grid.dy)
@@ -101,18 +100,22 @@ def advance_interface(
     GF = shape_factor_GF(fs, grid.theta, masks)
 
     # 3) Δf_s（界面带；单向、限幅）
-    eps = 1e-30
     delta_fs = np.zeros_like(fs, dtype=float)
     num = GF[mask_int] * vn[mask_int] * dt
-    den = np.maximum(Ln[mask_int], eps)
+    den = Ln[mask_int]
     df_int = num / den
-    df_int = np.maximum(df_int, 0.0)
     np.minimum(df_int, 1.0 - fs[mask_int], out=df_int)
     delta_fs[mask_int] = df_int
 
     # 4) 原地更新 fs；界面满固后令 CL=0
+    fs_prev = fs.copy()
     fs += delta_fs
-    grid.CL[fs == 1.0] = 0.0
+
+    m_newsol = mask_int.astype(bool) & (fs_prev < 1.0) & (fs >= 1.0)
+
+    # 关键：右侧也用相同掩码取数，保证维度一致
+    # grid.CS[m_newsol] = k0 * fields.cls[m_newsol]
+    grid.CL[m_newsol] = 0.0
 
     # 5) 更新 ESVC 半对角线
     update_Ldia(grid, delta_fs, grid.theta)
@@ -141,7 +144,7 @@ def advance_interface_substeps(
     dy = float(grid.dy)
 
     # 子步个数（默认 4；<1 时按 1 处理）
-    M = int(cfg.get("capture_substeps", 4))
+    M = int(cfg.get("capture_substeps", 1))
     if M < 1:
         M = 1
     dt_sub = dt / M

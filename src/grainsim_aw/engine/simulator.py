@@ -80,7 +80,7 @@ from ..multiphysics.process import TransportProcess
 from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
 
-# from ..io.csv_matrix import dump_matrix
+from ..io.csv_matrix import dump_matrix
 
 
 logger = logging.getLogger(__name__)
@@ -190,16 +190,24 @@ class Simulator:
 
                 # 3-1) 更新 ghosts 与相掩码
                 update_ghosts(self.grid, self.cfg["domain"]["bc"])
-                fields.reset(masks["intf"])
-                masks = classify_phases(self.grid)
 
                 # 3-2) Thevoz 形核
                 self.nuc.nucleate(
                     self.grid, self.rng, self.cfg.get("nucleation", {}), masks
                 )
 
-                # dump_matrix(self.grid.fs, f"debug/fs0{step:06d}.csv")
+                # dump_matrix(self.grid.CS, f"debug/CS{step:06d}.csv")
+                # dump_matrix(self.grid.CL, f"debug/CL{step:06d}.csv")
+                # dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
                 # dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
+
+                # 3-8) ESVC 几何与捕捉
+                self.gro.geometry_and_capture(
+                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
+                )
+
+                fields.reset(masks["intf"])
+                masks = classify_phases(self.grid)
 
                 # 3-3) 计算曲率
                 self.itf.curvature(
@@ -229,6 +237,8 @@ class Simulator:
                     fields,
                     masks,
                 )
+                if False:
+                    dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
                 # dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
@@ -250,17 +260,13 @@ class Simulator:
                     masks,
                 )
 
-                # 3-8) ESVC 几何与捕捉
-                self.gro.geometry_and_capture(
-                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
-                )
-
                 # 3-9) 溶质场一步
                 self.trn.step_solute(
                     self.grid,
                     self.cfg.get("physics", {}).get("solute", {}),
                     dt,
                     fields,
+                    masks,
                 )
 
                 # 3-10) 温度更新
@@ -283,6 +289,9 @@ class Simulator:
 
             # 循环结束后保存一次
             snapshot(self.grid, t, step, self.out)
+            dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
+            dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
+            dump_matrix(fields.vn, f"debug/Vn{step:06d}.csv")
 
         except Exception:
             logger.exception("运行异常，保存事故快照以便排查")

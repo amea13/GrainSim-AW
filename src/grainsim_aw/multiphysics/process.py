@@ -6,13 +6,13 @@ from .temperature_adapter import update as _update_temperature
 
 class TransportProcess:
 
-    def step_solute(self, grid, cfg: Dict[str, Any], dt: float, fields):
+    def step_solute(self, grid, cfg: Dict[str, Any], dt: float, fields, masks):
         return _step_solute(
             grid=grid,
             cfg=cfg,
             dt=dt,
+            masks=masks,
             fs_dot=fields.fs_dot,
-            CL_star=fields.cls,
         )
 
     def update_temperature(self, grid, cfg: Dict[str, Any], t: float):
