@@ -1,150 +1,189 @@
 from __future__ import annotations
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Tuple, Optional
 import numpy as np
 
 __all__ = ["compute_curvature", "compute_normal"]
 
 
-# =========================
-# 曲率（中心差分法）
-# κ = (2 f_x f_y f_xy -  f_xx f_y^2 - f_yy f_x^2) / (f_x^2 + f_y^2)^(3/2)
-# 只在界面带写入 out
-# =========================
 def compute_curvature(
     grid,
     masks: Dict[str, np.ndarray],
-    cfg: Dict[str, Any],
     out: Optional[np.ndarray] = None,
-) -> np.ndarray:
+):
     """
-    用中心差分计算 level-set 形式的曲率 κ。
-    仅对界面带写入，其他位置保持 out 原值或置零。
+    dfsdx  = (fs[i, j+1] - fs[i, j-1]) / (2*dx)
+    dfsdy  = (fs[i+1, j] - fs[i-1, j]) / (2*dx)
+    dfs2dx = (fs[i, j+1] + fs[i, j-1] - 2*fs[i, j]) / dx^2
+    dfs2dy = (fs[i+1, j] + fs[i-1, j] - 2*fs[i, j]) / dx^2
+    dfsdxdy= (fs[i-1, j+1] + fs[i+1, j-1] - fs[i-1, j-1] - fs[i+1, j+1]) / (4*dx^2)
+    cur    = (2*dfsdx*dfsdy*dfsdxdy - dfs2dx*dfsdy^2 - dfs2dy*dfsdx^2) / sqrt((dfsdx^2+dfsdy^2)^3)
     """
     fs = grid.fs
-    dx = float(grid.dx)
-    dy = float(grid.dy)
-
-    intf: np.ndarray = masks["intf"]
-    if intf is None:
-        raise KeyError("masks 中缺少 'intf' 或 'mask_int'")
-    intf = np.asarray(intf, dtype=bool)
-
-    # 仅 core 区域参与写入，避免 ghost 受 roll 影响
-    ys, xs = grid.core
-    core_mask = np.zeros_like(intf, dtype=bool)
-    core_mask[ys, xs] = True
-    write_mask = intf & core_mask
-
-    roll = np.roll
-
-    # 一阶导
-    fx = (roll(fs, -1, axis=1) - roll(fs, 1, axis=1)) / (2.0 * dx)
-    fy = (roll(fs, -1, axis=0) - roll(fs, 1, axis=0)) / (2.0 * dy)
-
-    # 二阶与混合导
-    fxx = (roll(fs, -1, axis=1) + roll(fs, 1, axis=1) - 2.0 * fs) / (dx * dx)
-    fyy = (roll(fs, -1, axis=0) + roll(fs, 1, axis=0) - 2.0 * fs) / (dy * dy)
-    fxy = (
-        roll(roll(fs, -1, axis=0), 1, axis=1)
-        + roll(roll(fs, 1, axis=0), -1, axis=1)
-        - roll(roll(fs, -1, axis=0), -1, axis=1)
-        - roll(roll(fs, 1, axis=0), 1, axis=1)
-    ) / (4.0 * dx * dy)
-
-    g2 = fx * fx + fy * fy
-    num = 2.0 * fx * fy * fxy - fxx * (fy * fy) - fyy * (fx * fx)
-    den = np.power(g2, 1.5) + 1e-30
-
-    kappa_full = num / den
+    Ny, Nx = fs.shape
 
     if out is None:
-        out = np.zeros_like(fs, dtype=float)
-    out[write_mask] = kappa_full[write_mask]
+        out = np.zeros_like(fs, dtype=np.float64)
+
+    mask_intf = masks["intf"]
+
+    dx = float(grid.dx)  # 对应 C++ 的 len
+    dx2 = dx * dx
+
+    for i in range(Ny):
+        for j in range(Nx):
+            if not mask_intf[i, j]:
+                continue
+
+            im, ip = i - 1, i + 1
+            jm, jp = j - 1, j + 1
+
+            dfsdx = (fs[i, jp] + (-fs[i, jm])) / (2.0 * dx)
+            dfsdy = (fs[ip, j] + (-fs[im, j])) / (2.0 * dx)
+            dfs2dx = (fs[i, jp] + fs[i, jm] - 2.0 * fs[i, j]) / dx2
+            dfs2dy = (fs[ip, j] + fs[im, j] - 2.0 * fs[i, j]) / dx2
+            dfsdxdy = (fs[im, jp] + fs[ip, jm] - fs[im, jm] - fs[ip, jp]) / (4.0 * dx2)
+
+            num = (
+                2.0 * dfsdx * dfsdy * dfsdxdy
+                - dfs2dx * (dfsdy * dfsdy)
+                - dfs2dy * (dfsdx * dfsdx)
+            )
+            den_base = dfsdx * dfsdx + dfsdy * dfsdy
+            out[i, j] = num / np.sqrt(den_base * den_base * den_base)
+
     return out
 
 
-# =========================
-# 法向（圆核质心法，一阶矩权重）
-# n = - (num_x, num_y) / |(num_x, num_y)|
-# 只在界面带写入 out_nx/out_ny
-# =========================
 def compute_normal(
     grid,
     masks: Dict[str, np.ndarray],
-    cfg: Dict[str, Any],
     out_nx: np.ndarray,
     out_ny: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """简化版本，使用预定义的偏移量列表但更Pythonic"""
+    """
+    - 仅对 masks['intf'] 为 True 的元胞计算；
+    - 使用 5x5 窗 + 半径3圈的三组权重(1.0, 0.83, 0.65)；
+    - 直接写入 out_nx/out_ny
+    依赖 grid.fs、grid.x、grid.y 三个二维数组。
+    """
+
     fs = grid.fs
-    dx, dy = grid.dx, grid.dy
-    intf_indices = np.where(masks["intf"])
+    x = grid.x  # 对应 C++: cell[i][j].x
+    y = grid.y  # 对应 C++: cell[i][j].y
 
-    # 预定义偏移量和权重
-    offsets_weights = _get_offsets_and_weights()
+    mask_intf = masks["intf"]  # 按你的约束，不做兜底
 
-    # 向量化计算所有偏移
-    di_array, dj_array, weights_array = map(np.array, zip(*offsets_weights))
+    Ny, Nx = fs.shape
 
-    # 对每个界面点进行计算
-    for i, j in zip(*intf_indices):
-        # 计算所有邻域点的坐标
-        ni_array = i + di_array
-        nj_array = j + dj_array
+    # 遍历全域；是否计算由 mask 决定（不强加 i=2..ROWS+1 的显式范围）
+    for i in range(Ny):
+        for j in range(Nx):
+            if not mask_intf[i, j]:
+                continue
 
-        # 获取对应的fs值
-        fs_values = fs[ni_array, nj_array]
+            # 对应 C++: if (cell[i][j].sta == 0) {...}
+            # 下面完全照搬其加权累计写法
+            xfz = 0.0
+            yfz = 0.0
+            fm = 0.0
 
-        # 过滤掉fs=0的点
-        valid_mask = fs_values != 0
-        if not np.any(valid_mask):
-            continue
+            # 5x5 窗（权重 1.0）
+            for n in range(5):  # n = 0..4
+                for m in range(5):  # m = 0..4
+                    ii = i + (n - 2)
+                    jj = j + (m - 2)
+                    fij = fs[ii, jj]
+                    xfz += fij * 1.0 * x[ii, jj]
+                    yfz += fij * 1.0 * y[ii, jj]
+                    fm += fij * 1.0
 
-        fs_valid = fs_values[valid_mask]
-        weights_valid = weights_array[valid_mask]
-        di_valid = di_array[valid_mask]
-        dj_valid = dj_array[valid_mask]
+            # 半径 3，轴向（权重 1.0）
+            xfz += (
+                fs[i - 3, j] * x[i - 3, j]
+                + fs[i, j - 3] * x[i, j - 3]
+                + fs[i + 3, j] * x[i + 3, j]
+                + fs[i, j + 3] * x[i, j + 3]
+            ) * 1.0
+            yfz += (
+                fs[i - 3, j] * y[i - 3, j]
+                + fs[i, j - 3] * y[i, j - 3]
+                + fs[i + 3, j] * y[i + 3, j]
+                + fs[i, j + 3] * y[i, j + 3]
+            ) * 1.0
+            fm += (fs[i - 3, j] + fs[i, j - 3] + fs[i + 3, j] + fs[i, j + 3]) * 1.0
 
-        # 向量化计算
-        weighted_fs = fs_valid * weights_valid
-        xfz = np.sum(weighted_fs * dj_valid * dx)
-        yfz = np.sum(weighted_fs * di_valid * dy)
-        fm = np.sum(weighted_fs)
+            # 半径 3，“马步”1格（权重 0.83）
+            xfz += (
+                fs[i - 3, j + 1] * x[i - 3, j + 1]
+                + fs[i - 3, j - 1] * x[i - 3, j - 1]
+                + fs[i + 3, j + 1] * x[i + 3, j + 1]
+                + fs[i + 3, j - 1] * x[i + 3, j - 1]
+                + fs[i + 1, j - 3] * x[i + 1, j - 3]
+                + fs[i - 1, j - 3] * x[i - 1, j - 3]
+                + fs[i + 1, j + 3] * x[i + 1, j + 3]
+                + fs[i - 1, j + 3] * x[i - 1, j + 3]
+            ) * 0.83
+            yfz += (
+                fs[i - 3, j + 1] * y[i - 3, j + 1]
+                + fs[i - 3, j - 1] * y[i - 3, j - 1]
+                + fs[i + 3, j + 1] * y[i + 3, j + 1]
+                + fs[i + 3, j - 1] * y[i + 3, j - 1]
+                + fs[i + 1, j - 3] * y[i + 1, j - 3]
+                + fs[i - 1, j - 3] * y[i - 1, j - 3]
+                + fs[i + 1, j + 3] * y[i + 1, j + 3]
+                + fs[i - 1, j + 3] * y[i - 1, j + 3]
+            ) * 0.83
+            fm += (
+                fs[i - 3, j + 1]
+                + fs[i - 3, j - 1]
+                + fs[i + 3, j + 1]
+                + fs[i + 3, j - 1]
+                + fs[i + 1, j - 3]
+                + fs[i - 1, j - 3]
+                + fs[i + 1, j + 3]
+                + fs[i - 1, j + 3]
+            ) * 0.83
 
-        # 计算法向量
-        if fm > 0:
-            xb, yb = xfz / fm, yfz / fm
-            magnitude = np.sqrt(xb**2 + yb**2)
-            if magnitude > 0:
-                out_nx[i, j] = -xb / magnitude
-                out_ny[i, j] = -yb / magnitude
+            # 半径 3，“马步”2格（权重 0.65）
+            xfz += (
+                fs[i - 3, j + 2] * x[i - 3, j + 2]
+                + fs[i - 3, j - 2] * x[i - 3, j - 2]
+                + fs[i + 3, j + 2] * x[i + 3, j + 2]
+                + fs[i + 3, j - 2] * x[i + 3, j - 2]
+                + fs[i + 2, j - 3] * x[i + 2, j - 3]
+                + fs[i - 2, j - 3] * x[i - 2, j - 3]
+                + fs[i + 2, j + 3] * x[i + 2, j + 3]
+                + fs[i - 2, j + 3] * x[i - 2, j + 3]
+            ) * 0.65
+            yfz += (
+                fs[i - 3, j + 2] * y[i - 3, j + 2]
+                + fs[i - 3, j - 2] * y[i - 3, j - 2]
+                + fs[i + 3, j + 2] * y[i + 3, j + 2]
+                + fs[i + 3, j - 2] * y[i + 3, j - 2]
+                + fs[i + 2, j - 3] * y[i + 2, j - 3]
+                + fs[i - 2, j - 3] * y[i - 2, j - 3]
+                + fs[i + 2, j + 3] * y[i + 2, j + 3]
+                + fs[i - 2, j + 3] * y[i - 2, j + 3]
+            ) * 0.65
+            fm += (
+                fs[i - 3, j + 2]
+                + fs[i - 3, j - 2]
+                + fs[i + 3, j + 2]
+                + fs[i + 3, j - 2]
+                + fs[i + 2, j - 3]
+                + fs[i - 2, j - 3]
+                + fs[i + 2, j + 3]
+                + fs[i - 2, j + 3]
+            ) * 0.65
+
+            xb = xfz / fm
+            yb = yfz / fm
+
+            AB = (
+                (x[i, j] - xb) * (x[i, j] - xb) + (y[i, j] - yb) * (y[i, j] - yb)
+            ) ** 0.5
+
+            out_nx[i, j] = (x[i, j] - xb) / AB
+            out_ny[i, j] = (y[i, j] - yb) / AB
 
     return out_nx, out_ny
-
-
-def _get_offsets_and_weights():
-    """生成偏移量和权重的更简洁方式"""
-    offsets_weights = []
-
-    # 核心5×5 (权重1.0)
-    for di in range(-2, 3):
-        for dj in range(-2, 3):
-            offsets_weights.append((di, dj, 1.0))
-
-    # 环带权重规则
-    ring3_patterns = [
-        ([(0, 3), (0, -3), (3, 0), (-3, 0)], 1.0),  # 轴向
-        (
-            [(1, 3), (-1, 3), (1, -3), (-1, -3), (3, 1), (3, -1), (-3, 1), (-3, -1)],
-            0.83,
-        ),
-        (
-            [(2, 3), (-2, 3), (2, -3), (-2, -3), (3, 2), (3, -2), (-3, 2), (-3, -2)],
-            0.65,
-        ),
-    ]
-
-    for positions, weight in ring3_patterns:
-        offsets_weights.extend([(di, dj, weight) for di, dj in positions])
-
-    return offsets_weights

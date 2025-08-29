@@ -259,16 +259,13 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
         # 继承 grain_id / theta
         gid[w.child_i, w.child_j] = w.gid
         theta[w.child_i, w.child_j] = w.theta
-        # Cs[w.child_i, w.child_j] = float(Cs[w.parent_i, w.parent_j])
+        Cs[w.child_i, w.child_j] = float(Cs[w.parent_i, w.parent_j])
 
         # 父/子中心与胜出顶点
         ci, cj = w.child_i, w.child_j
         xC, yC = _cell_center_abs(ci, cj, dx, dy, i0, j0)
         xP, yP = _cell_center_abs(w.parent_i, w.parent_j, dx, dy, i0, j0)
         x0, y0 = w.xv, w.yv
-
-        # 捕捉时设置子胞固相浓度：Cs_child = k0 * Cl_child
-        Cs[ci, cj] = k0 * Cl[ci, cj]
 
         # 统一用父胞取向角
         th_parent = float(theta[w.parent_i, w.parent_j])

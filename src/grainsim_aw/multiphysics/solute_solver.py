@@ -1,234 +1,209 @@
-"""
-溶质传输求解器（无对流）
-======================
-
-【控制方程】（单一网格双变量，五点格式）
-  令 α = 1 - f_s （液相体积分数），在零法向通量边界（Neumann）下：
-    d( α C_L )/dt = ∇·( α D_L ∇C_L ) + S_pair
-    d( (1-α) C_S )/dt = ∇·( (1-α) D_S ∇C_S )
-  其中源项 S_pair = (1 - k) * C_L^n * df_s/dt
-
-【时间离散】
-  - 扩散与积累项：后向欧拉（系数取 t^{n+1}，即推进 fs 后）
-  - 源项：使用 t^n 的 C_L 与给定的 df_s/dt
-
-【空间离散】
-  - 正交网格五点格式；面导通系数使用复合扩散率的调和插值：
-      Γ^L = α D_L，Γ^S = (1-α) D_S
-  - 鬼点层（ghost）由调用方维护；这里通过 pad(edge) 等效零法向梯度
-
-【接口】
-  - solute_advance(grid, cfg, dt, masks, CL_star, fs_dot)  # 原地更新 grid.CL/CS
-  - step_solute(...)                                       # 与 TransportProcess 对接的薄包装
-  - total_solute_mass(grid)                                # 诊断用总溶质量
-
-【配置示例】
-  cfg = {
-    "k": 0.34,                 # 分配系数（若不从界面过程传入，可在此做常数近似）
-    "eps": 1e-12,              # 活跃区阈值（跳过纯相单元）
-    "solver": {"max_iter": 200, "tol": 1e-8},
-    "clip": {"min": 0.0},      # 可选：对 CL/CS 做非负截断
-  }
-"""
-
-from __future__ import annotations
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import numpy as np
-
-from ..core.material import Dl_from_T, Ds_from_T
-
-__all__ = ["step_solute"]
+from ..core.material import Dl_from_T, Ds_from_T  # 你已有
 
 
-# -----------------------
-# 工具函数
-# -----------------------
-def _k_const(cfg: Dict) -> float:
-    """常数分配系数 k（若界面过程未提供更精准耦合时使用）"""
-    return float(cfg.get("k", 0.34))
-
-
-def _harmonic(a: np.ndarray, b: np.ndarray, eps: float = 1e-300) -> np.ndarray:
-    """调和平均：用于面处的复合扩散率插值"""
-    return 2.0 * a * b / (a + b + eps)
-
-
-def _build_conductance(
-    Gamma: np.ndarray, dx: float, dy: float, nghost: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    构造 core 区域上的面导通系数 (Ge, Gw, Gn, Gs)：
-      Ge 乘 (φ_E - φ_P)，Gw 乘 (φ_W - φ_P) 等。
-    """
-    g = int(nghost)
-    ys = slice(g, -g)
-    xs = slice(g, -g)
-
-    Gp = Gamma[ys, xs]
-    Ge_nb = np.roll(Gamma, -1, axis=1)[ys, xs]
-    Gw_nb = np.roll(Gamma, 1, axis=1)[ys, xs]
-    Gn_nb = np.roll(Gamma, -1, axis=0)[ys, xs]
-    Gs_nb = np.roll(Gamma, 1, axis=0)[ys, xs]
-
-    # 面处 Γ 的调和平均
-    GeG = _harmonic(Gp, Ge_nb)
-    GwG = _harmonic(Gp, Gw_nb)
-    GnG = _harmonic(Gp, Gn_nb)
-    GsG = _harmonic(Gp, Gs_nb)
-
-    # 正交网格面积/距离度量：G_face = Γ_f * A / d
-    Ge = GeG * dy / dx
-    Gw = GwG * dy / dx
-    Gn = GnG * dx / dy
-    Gs = GsG * dx / dy
-    return Ge, Gw, Gn, Gs
-
-
-def _jacobi_sweep(
-    aP: np.ndarray,
-    Ge: np.ndarray,
-    Gw: np.ndarray,
-    Gn: np.ndarray,
-    Gs: np.ndarray,
-    b: np.ndarray,
-    phi: np.ndarray,
-    nghost: int,
-    active: np.ndarray,
-    max_iter: int,
-    tol: float,
-) -> np.ndarray:
-    """
-    向量化 Jacobi 迭代（仅在 core 上），鬼点通过 pad(edge) 实现零法向梯度。
-    aP、Ge...、b、phi、active 的形状均为 core（Ny-2g, Nx-2g）。
-    """
-    for _ in range(max_iter):
-        phip = np.pad(phi, ((1, 1), (1, 1)), mode="edge")  # 等效镜像 ghost
-        phi_E = phip[1:-1, 2:]
-        phi_W = phip[1:-1, :-2]
-        phi_N = phip[2:, 1:-1]
-        phi_S = phip[:-2, 1:-1]
-
-        num = b + Ge * phi_E + Gw * phi_W + Gn * phi_N + Gs * phi_S
-        phi_new = num / (aP + 1e-300)
-
-        # 非活跃区保持原值（纯相跳过）
-        phi_new = np.where(active, phi_new, phi)
-
-        # 收敛判据：活跃区无穷范数
-        if np.any(active):
-            diff = np.max(np.abs(phi_new[active] - phi[active]))
-            phi = phi_new
-            if diff < tol:
-                break
-        else:
-            phi = phi_new
-            break
-    return phi
-
-
-# -----------------------
-# 主入口
-# -----------------------
 def step_solute(
     grid,
     cfg: Dict,
     dt: float,
     masks: Dict[str, np.ndarray],
-    fs_dot: np.ndarray,  # 本步固相率时间导数（来自界面推进）
+    fs_dot: np.ndarray,  # 本步 df_s/dt（与 grid 形状一致，含 ghost）
 ) -> None:
     """
-    单步推进溶质场（原地更新 grid.CL / grid.CS）
-
-    输入
-    ----
-    grid : 具有属性 fs, CL, CS, T, dx, dy, nghost 的对象
-    cfg  : 见模块顶部“配置示例”
-    dt   : 时间步长
-    masks: 相位掩码字典（当前保留；将来可能用于选择性更新）
-    CL_star : C_L^*（与 grid 形状一致，含 ghost）
-    fs_dot  : df_s/dt（与 grid 形状一致，含 ghost）
+    纯 C++ 风格推进溶质场（显式一次迭代）：
+      - 计算液相/固相导通系数（Cla/Csa）
+      - 应用域边界无扩散（Cl0）
+      - 计算 aCl0（Clap0/Csap0）
+      - 用 precell（上一步浓度）显式更新 Cl/Cs
+    不做任何数值保护或裁剪；依赖 ghost 可用；要求 nghost ≥ 1。
     """
-    g = int(grid.nghost)
-    ys = slice(g, -g)
-    xs = slice(g, -g)
 
-    # 物性/几何
-    k = _k_const(cfg)
+    fs = grid.fs
+    CL = grid.CL
+    CS = grid.CS
     T = grid.T
     dx = float(grid.dx)
     dy = float(grid.dy)
-    Vc = dx * dy
+    g = int(grid.nghost)
 
-    # t^{n+1} 的相分数（已由界面推进得到）
-    fs_np1 = grid.fs
-    alpha_np1 = 1.0 - fs_np1  # 液相体积分数
+    Ny, Nx = fs.shape
 
-    # 用 fs_dot 近似重建 t^n 的相分数（后向欧拉一致）
-    alpha_n = np.clip(alpha_np1 + dt * fs_dot, 0.0, 1.0)
-    fs_n = 1.0 - alpha_n
+    # ---- 显式所需：precell（上一时刻） ----
+    CL_prev = CL.copy()
+    CS_prev = CS.copy()
 
-    # t^n 的场
-    CL_old = grid.CL.copy()
-    CS_old = grid.CS.copy()
-
-    # 扩散率（按中心点温度 T）
+    # ---- Dl/Ds 取中心温度 ----
     DL = Dl_from_T(T)
     DS = Ds_from_T(T)
 
-    solid_mask = fs_np1 == 1.0
-    GammaL = alpha_np1 * DL
-    GammaS = DS * solid_mask.astype(float)
+    # ---- k 与体元体积 ----
+    k = float(cfg.get("k", 0.34))
+    Vc = dx * dy
 
-    # 面导通系数（core 形状）
-    GeL, GwL, GnL, GsL = _build_conductance(GammaL, dx, dy, g)
-    GeS, GwS, GnS, GsS = _build_conductance(GammaS, dx, dy, g)
+    # ---- sta 从 fs 判定：-1 液相 / 0 界面 / 1 固相 ----
+    sta = np.zeros_like(fs, dtype=np.int8)
+    sta[fs == 0.0] = -1
+    sta[fs == 1.0] = 1
+    # 其余保持 0
 
-    # 成对源（core）
-    fs_dot_c = fs_dot[ys, xs]
-    CL_old_c = CL_old[ys, xs]
-    S_pair = (1.0 - k) * CL_old_c * fs_dot_c  # 单位：1/时间
+    # ---- 系数场（全域分配，逐格写）----
+    Clae0 = np.zeros_like(fs, dtype=np.float64)
+    Claw0 = np.zeros_like(fs, dtype=np.float64)
+    Clan0 = np.zeros_like(fs, dtype=np.float64)
+    Clas0 = np.zeros_like(fs, dtype=np.float64)
+    Clap1 = np.zeros_like(fs, dtype=np.float64)
+    Clap0 = np.zeros_like(fs, dtype=np.float64)
+    Clbp = np.zeros_like(fs, dtype=np.float64)
 
-    # 液相线性系统：aP_L * CL^{n+1} = b_L + ∑ G * 邻居
-    alpha_np1_c = alpha_np1[ys, xs]
-    alpha_n_c = alpha_n[ys, xs]
-    aP_L = alpha_np1_c * Vc / dt + (GeL + GwL + GnL + GsL)
-    b_L = alpha_n_c * CL_old_c * Vc / dt + S_pair * Vc
+    Csae0 = np.zeros_like(fs, dtype=np.float64)
+    Csaw0 = np.zeros_like(fs, dtype=np.float64)
+    Csan0 = np.zeros_like(fs, dtype=np.float64)
+    Csas0 = np.zeros_like(fs, dtype=np.float64)
+    Csap1 = np.zeros_like(fs, dtype=np.float64)
+    Csap0 = np.zeros_like(fs, dtype=np.float64)
 
-    # 固相线性系统
-    fs_n_c = fs_n[ys, xs]
-    CS_old_c = CS_old[ys, xs]
-    solid_mask_c = solid_mask[ys, xs].astype(float)
-    aP_S = solid_mask_c * (Vc / dt) + (GeS + GwS + GnS + GsS)
-    b_S = solid_mask_c * (fs_n_c * CS_old_c * Vc / dt)
+    # 方便：核心区索引范围（含边界第一圈）
+    is_beg, is_end = g, Ny - g
+    js_beg, js_end = g, Nx - g
 
-    # 仅在“活跃区”求解（跳过近似纯相单元）
-    eps = float(cfg.get("eps", 1e-12))
-    active_L = alpha_np1_c > eps
-    active_S = solid_mask[ys, xs]
+    # ========================
+    # 1) Cla：液相系数 + 源项 Clbp
+    # ========================
+    for i in range(is_beg, is_end):
+        im, ip = i - 1, i + 1
+        for j in range(js_beg, js_end):
+            jm, jp = j - 1, j + 1
 
-    # 迭代参数
-    solver = cfg.get("solver", {})
-    max_iter = int(solver.get("max_iter", 100))
-    tol = float(solver.get("tol", 1e-8))
+            if sta[i, j] == -1 or sta[i, j] == 0:
+                # 初值
+                Clae0[i, j] = DL[i, j] * dy / dx
+                Claw0[i, j] = DL[i, j] * dy / dx
+                Clan0[i, j] = DL[i, j] * dx / dy
+                Clas0[i, j] = DL[i, j] * dx / dy
 
-    # 初值（取 t^n）
-    CL_c = CL_old_c.copy()
-    CS_c = CS_old_c.copy()
+                # 邻居为固相 → 对应面导通置零
+                if sta[ip, j] == 1:
+                    Clas0[i, j] = 0.0
+                if sta[im, j] == 1:
+                    Clan0[i, j] = 0.0
+                if sta[i, jp] == 1:
+                    Clae0[i, j] = 0.0
+                if sta[i, jm] == 1:
+                    Claw0[i, j] = 0.0
 
-    # Jacobi 迭代求解
-    CL_c = _jacobi_sweep(
-        aP_L, GeL, GwL, GnL, GsL, b_L, CL_c, g, active_L, max_iter, tol
-    )
-    CS_c = _jacobi_sweep(
-        aP_S, GeS, GwS, GnS, GsS, b_S, CS_c, g, active_S, max_iter, tol
-    )
+                # 系数 p1 / p0
+                Clap1[i, j] = Vc / dt
+                Clap0[i, j] = (
+                    Clap1[i, j] - Clae0[i, j] - Claw0[i, j] - Clan0[i, j] - Clas0[i, j]
+                )
 
-    # 可选截断（避免负浓度）
-    cmin = float(cfg.get("clip", {"min": 0.0}).get("min", 0.0))
-    if cmin is not None:
-        CL_c = np.maximum(CL_c, cmin)
-        CS_c = np.maximum(CS_c, cmin)
+                # 成对源：Clbp = Cl * (1-k) * delta_fs * dx*dy / dt
+                # 其中 delta_fs = fs_dot * dt
+                Clbp[i, j] = CL[i, j] * (1.0 - k) * fs_dot[i, j] * Vc
 
-    # 回写 core
-    grid.CL[ys, xs] = CL_c
-    grid.CS[ys, xs] = CS_c
+    # ========================
+    # 2) Csa：固相系数
+    # ========================
+    for i in range(is_beg, is_end):
+        im, ip = i - 1, i + 1
+        for j in range(js_beg, js_end):
+            jm, jp = j - 1, j + 1
+
+            if sta[i, j] == 1 or sta[i, j] == 0:
+                # 初值
+                Csae0[i, j] = DS[i, j] * dy / dx
+                Csaw0[i, j] = DS[i, j] * dy / dx
+                Csan0[i, j] = DS[i, j] * dx / dy
+                Csas0[i, j] = DS[i, j] * dx / dy
+
+                # 邻居为液相 → 对应面导通置零
+                if sta[ip, j] == -1:
+                    Csas0[i, j] = 0.0
+                if sta[im, j] == -1:
+                    Csan0[i, j] = 0.0
+                if sta[i, jp] == -1:
+                    Csae0[i, j] = 0.0
+                if sta[i, jm] == -1:
+                    Csaw0[i, j] = 0.0
+
+                # 系数 p1 / p0
+                Csap1[i, j] = Vc / dt
+                Csap0[i, j] = (
+                    Csap1[i, j] - Csae0[i, j] - Csaw0[i, j] - Csan0[i, j] - Csas0[i, j]
+                )
+
+    # ========================
+    # 3) 域边界无扩散（等价于 C++ 的 Cl0()）
+    #    在“第一圈 core 单元”把面导通清零
+    # ========================
+    # 左/右边界：j = g / j = Nx-g-1
+    jL = js_beg
+    jR = js_end - 1
+    for i in range(is_beg, is_end):
+        # 液相系数
+        Claw0[i, jL] = 0.0
+        Clae0[i, jR] = 0.0
+        # 固相系数
+        Csaw0[i, jL] = 0.0
+        Csae0[i, jR] = 0.0
+
+    # 上/下边界：i = g / i = Ny-g-1
+    iT = is_beg
+    iB = is_end - 1
+    for j in range(js_beg, js_end):
+        # 液相系数
+        Clan0[iT, j] = 0.0
+        Clas0[iB, j] = 0.0
+        # 固相系数
+        Csan0[iT, j] = 0.0
+        Csas0[iB, j] = 0.0
+
+    # ========================
+    # 4) 重新计算 Clap0 / Csap0（等价 aCl0()）
+    # ========================
+    for i in range(is_beg, is_end):
+        for j in range(js_beg, js_end):
+            Clap0[i, j] = (
+                Clap1[i, j] - Clae0[i, j] - Claw0[i, j] - Clan0[i, j] - Clas0[i, j]
+            )
+            Csap0[i, j] = (
+                Csap1[i, j] - Csae0[i, j] - Csaw0[i, j] - Csan0[i, j] - Csas0[i, j]
+            )
+
+    # ========================
+    # 5) 显式更新：Cl()
+    # ========================
+    for i in range(is_beg, is_end):
+        im, ip = i - 1, i + 1
+        for j in range(js_beg, js_end):
+            jm, jp = j - 1, j + 1
+
+            if sta[i, j] == -1 or sta[i, j] == 0:
+                num = (
+                    Clae0[i, j] * CL_prev[i, jp]
+                    + Claw0[i, j] * CL_prev[i, jm]
+                    + Clan0[i, j] * CL_prev[im, j]
+                    + Clas0[i, j] * CL_prev[ip, j]
+                    + Clap0[i, j] * CL_prev[i, j]
+                    + Clbp[i, j]
+                )
+                CL[i, j] = num / Clap1[i, j]
+
+    # ========================
+    # 6) 显式更新：Cs()
+    # ========================
+    for i in range(is_beg, is_end):
+        im, ip = i - 1, i + 1
+        for j in range(js_beg, js_end):
+            jm, jp = j - 1, j + 1
+
+            if sta[i, j] == 1 or sta[i, j] == 0:
+                num = (
+                    Csae0[i, j] * CS_prev[i, jp]
+                    + Csaw0[i, j] * CS_prev[i, jm]
+                    + Csan0[i, j] * CS_prev[im, j]
+                    + Csas0[i, j] * CS_prev[ip, j]
+                    + Csap0[i, j] * CS_prev[i, j]
+                )
+                CS[i, j] = num / Csap1[i, j]

@@ -4,63 +4,86 @@ import numpy as np
 
 
 def L_n(nx: np.ndarray, ny: np.ndarray, dx: float, dy: float) -> np.ndarray:
-    """由法向分量计算“界面穿越长度” Ln（dx=dy 时等价于常用式）。"""
-    eps = 1e-12
-    c = np.maximum(np.abs(nx), eps)
-    s = np.maximum(np.abs(ny), eps)
-    Ln_c_ge_s = dx * (1.0 / c + s - (s * s) / c)
-    Ln_s_gt_c = dy * (1.0 / s + c - (c * c) / s)
-    return np.where(c >= s, Ln_c_ge_s, Ln_s_gt_c)
+    """
+        if |cos(angn)| >= |sin(angn)|:
+            Ln = len*( 1/|cos| + (1 - |tan|)*|sin| )
+        else:
+            Ln = len*( 1/|sin| + (1 - |1/tan|)*|cos| )
+    其中 cos(angn) = -nx, sin(angn) = ny。。
+    """
+    Ny, Nx = nx.shape
+    Ln = np.zeros_like(nx, dtype=np.float64)
+
+    for i in range(Ny):
+        for j in range(Nx):
+            # |cos(angn)| = | -nx | = |nx|,  |sin(angn)| = |ny|
+            c = abs(nx[i, j])
+            s = abs(ny[i, j])
+
+            if c >= s:
+                # |tan| = s / c
+                Ln[i, j] = dx * (1.0 / c + (1.0 - (s / c)) * s)
+            else:
+                # |1/tan| = c / s
+                Ln[i, j] = dx * (1.0 / s + (1.0 - (c / s)) * c)
+
+    return Ln
 
 
 def shape_factor_GF(
     fs: np.ndarray, theta_rad: np.ndarray, masks: Dict[str, np.ndarray]
 ) -> np.ndarray:
+    """
+    - 仅在界面胞上计算（masks['intf'] 为 True）
+    - 轴向邻胞有固相 → GF=1
+    - 轴向全无且对角固相数≥2 → GF=1
+    - 轴向全无且对角固相数<2 → GF=1/√2/ cos(theta)
+    - 其余位置默认 0
+    """
     Ny, Nx = fs.shape
-    GF = np.ones((Ny, Nx), dtype=float)
+    gf = np.zeros_like(fs, dtype=np.float64)
+    mask_int = masks["intf"]
 
-    mask_sol = masks["mask_sol"] if "mask_sol" in masks else masks["sol"]
-    mask_int = masks["mask_int"] if "mask_int" in masks else masks["intf"]
-    if mask_sol.dtype != bool:
-        mask_sol = mask_sol.astype(bool, copy=False)
-    if mask_int.dtype != bool:
-        mask_int = mask_int.astype(bool, copy=False)
+    for i in range(Ny):
+        for j in range(Nx):
+            if not mask_int[i, j]:
+                continue
 
-    # 一阶轴向邻胞（FNNC）
-    solN = np.roll(mask_sol, 1, axis=0)
-    solS = np.roll(mask_sol, -1, axis=0)
-    solW = np.roll(mask_sol, 1, axis=1)
-    solE = np.roll(mask_sol, -1, axis=1)
-    has_primary = solN | solS | solW | solE  # NFNNC > 0
+            im, ip = i - 1, i + 1
+            jm, jp = j - 1, j + 1
 
-    # 二阶对角邻胞（SNNC）
-    solNE = np.roll(np.roll(mask_sol, 1, axis=0), -1, axis=1)
-    solNW = np.roll(np.roll(mask_sol, 1, axis=0), 1, axis=1)
-    solSE = np.roll(np.roll(mask_sol, -1, axis=0), -1, axis=1)
-    solSW = np.roll(np.roll(mask_sol, -1, axis=0), 1, axis=1)
-    diag_count = (
-        solNE.astype(np.int8)
-        + solNW.astype(np.int8)
-        + solSE.astype(np.int8)
-        + solSW.astype(np.int8)
-    )
+            # 轴向固相计数 S1
+            S1 = 0.0
+            if fs[im, j] == 1.0:
+                S1 += 1.0
+            if fs[ip, j] == 1.0:
+                S1 += 1.0
+            if fs[i, jm] == 1.0:
+                S1 += 1.0
+            if fs[i, jp] == 1.0:
+                S1 += 1.0
 
-    # 分段：
-    # 1) NFNNC = 0 且 NSNNC = 0 → GF = 0
-    mask_none_sol = (~has_primary) & (diag_count == 0)
-    GF[mask_int & mask_none_sol] = 0.0
+            # 对角固相计数 S2
+            S2 = 0.0
+            if fs[im, jm] == 1.0:
+                S2 += 1.0
+            if fs[im, jp] == 1.0:
+                S2 += 1.0
+            if fs[ip, jm] == 1.0:
+                S2 += 1.0
+            if fs[ip, jp] == 1.0:
+                S2 += 1.0
 
-    # 2) NFNNC > 0 → GF = 1 （默认已是 1）
-    # 3) NSNNC ≥ 2 → GF = 1 （默认已是 1）
+            if S1 == 0.0 and S2 == 0.0:
+                gf[i, j] = 0.0
+            elif S1 > 0.0:
+                gf[i, j] = 1.0
+            elif S2 >= 2.0:
+                gf[i, j] = 1.0
+            else:
+                gf[i, j] = 1.0 / np.sqrt(2.0) / np.cos(theta_rad[i, j])
 
-    # 4) 仅单一对角固相（NFNNC = 0 且 NSNNC = 1）→ GF = 1 / (√2 * cos θ_min)
-    mask_single_diag = (~has_primary) & (diag_count == 1)
-    GF_single = (1.0 / np.sqrt(2.0)) / np.cos(theta_rad)
-    GF[mask_int & mask_single_diag] = GF_single[mask_int & mask_single_diag]
-
-    # 非界面保持 1
-    GF[~mask_int] = 1.0
-    return GF
+    return gf
 
 
 def update_Ldia(grid, delta_fs: np.ndarray, theta: np.ndarray) -> None:
@@ -71,7 +94,7 @@ def update_Ldia(grid, delta_fs: np.ndarray, theta: np.ndarray) -> None:
     denom = np.maximum(s, c)
     Ldia_max = dx / denom
     grid.L_dia += delta_fs * Ldia_max
-    np.minimum(grid.L_dia, Ldia_max, out=grid.L_dia)
+    # np.minimum(grid.L_dia, Ldia_max, out=grid.L_dia)
 
 
 def advance_interface(
@@ -87,6 +110,8 @@ def advance_interface(
     返回 fs_dot（同 fields.fs_dot）。
     """
     fs = grid.fs
+    Cl = grid.CL
+    Cs = grid.CS
     mask_int = masks.get("intf")
     k0 = float(cfg.get("k0", 0.34))
 
@@ -103,84 +128,26 @@ def advance_interface(
     delta_fs = np.zeros_like(fs, dtype=float)
     num = GF[mask_int] * vn[mask_int] * dt
     den = Ln[mask_int]
-    df_int = num / den
-    np.minimum(df_int, 1.0 - fs[mask_int], out=df_int)
-    delta_fs[mask_int] = df_int
+    delta_fs[mask_int] = num / den
 
-    # 4) 原地更新 fs；界面满固后令 CL=0
-    fs_prev = fs.copy()
-    fs += delta_fs
-
-    m_newsol = mask_int.astype(bool) & (fs_prev < 1.0) & (fs >= 1.0)
-
-    # 关键：右侧也用相同掩码取数，保证维度一致
-    # grid.CS[m_newsol] = k0 * fields.cls[m_newsol]
-    grid.CL[m_newsol] = 0.0
-
-    # 5) 更新 ESVC 半对角线
+    # 4)更新偏心正方形半对角线长度
     update_Ldia(grid, delta_fs, grid.theta)
+
+    # 5) 保存上一次迭代后的元胞状态
+    fs_prev = fs.copy()
+    Cl_prev = Cl.copy()
+    Cs_prev = Cs.copy()
+
+    if np.any(delta_fs[mask_int] > 1 - fs[mask_int]):
+        delta_fs[mask_int] = 1 - fs[mask_int]
+    fs[mask_int] = fs[mask_int] + delta_fs[mask_int]
+
+    Cs[mask_int] = (
+        Cs_prev[mask_int] * fs_prev[mask_int]
+        + k0 * Cl_prev[mask_int] * delta_fs[mask_int]
+    ) / (fs_prev[mask_int] + delta_fs[mask_int])
 
     # 6) 输出给溶质源项
     fs_dot = delta_fs / dt
-    fields.fs_dot[...] = fs_dot
-    return fs_dot
-
-
-def advance_interface_substeps(
-    grid,
-    masks,
-    vn: np.ndarray,
-    dt: float,
-    cfg: Dict[str, Any],
-    fields,
-):
-    """
-    界面推进：把同一物理步 dt 细分成 M 个几何子步，仅细分 Δf_s 与 L_dia 的推进。
-    溶质/温度仍按整步处理；fs_dot 用总增量/整步时间。
-    """
-    fs = grid.fs
-
-    dx = float(grid.dx)
-    dy = float(grid.dy)
-
-    # 子步个数（默认 4；<1 时按 1 处理）
-    M = int(cfg.get("capture_substeps", 1))
-    if M < 1:
-        M = 1
-    dt_sub = dt / M
-
-    # 1) Ln 与 GF：先整场计算一次，子步内用即时掩码索引
-    Ln = L_n(fields.nx, fields.ny, dx, dy)
-    GF = shape_factor_GF(fs, grid.theta, masks)
-
-    # 2) 子步推进：每个子步使用“即时界面掩码”(0<fs<1)，逐步限幅并累计
-    eps = 1e-30
-    delta_fs_total = np.zeros_like(fs, dtype=float)
-
-    for _ in range(M):
-        mask_int_sub = (fs > 0.0) & (fs < 1.0)
-        if not np.any(mask_int_sub):
-            break
-
-        den = np.maximum(Ln[mask_int_sub], eps)
-        df = GF[mask_int_sub] * vn[mask_int_sub] * dt_sub / den
-
-        # 单向、限幅：不能减小，不能超过剩余
-        df = np.maximum(df, 0.0)
-        room = 1.0 - fs[mask_int_sub]
-        df = np.minimum(df, room)
-
-        # 写回：即时更新 + 累计
-        fs[mask_int_sub] += df
-        delta_fs_total[mask_int_sub] += df
-
-    # 3) 满固后置 CL=0
-    grid.CL[fs == 1.0] = 0.0
-
-    # 4) 更新 ESVC 半对角线：用本步总 Δf_s
-    update_Ldia(grid, delta_fs_total, grid.theta)
-
-    # 5) 输出给溶质源项
-    fs_dot = delta_fs_total / dt
     fields.fs_dot[...] = fs_dot
     return fs_dot

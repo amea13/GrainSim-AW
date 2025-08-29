@@ -1,29 +1,24 @@
 from __future__ import annotations
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 import numpy as np
-
-from .geometry import compute_normal, compute_curvature
 
 
 def anisotropy_factor(
     nx: np.ndarray, ny: np.ndarray, theta: np.ndarray, eps: float, m: int = 4
 ) -> np.ndarray:
     """
-    f(φ,θ) = 1 - (m^2-1) * eps * cos[m*(φ-θ)], 其中
-      φ = atan2(ny, nx) ∈ (−π, π]
-      θ = 晶粒取向角
-    差角 δ 规约到 (−π/m, π/m]，避免周期与分支不连续带来的数值噪声。
+    if (ny >= 0) angn = acos(-nx)
+    else         angn = 2*pi - acos(-nx)
+    ani = 1 - 15 * eps * cos(m * (angn - theta))
     """
-    if eps == 0.0:
-        return np.ones_like(nx, dtype=float)
+    angn = np.empty_like(nx, dtype=np.float64)
+    mask = ny >= 0.0
 
-    phi = np.arctan2(ny, nx)  # (−π, π]
+    angn[mask] = np.arccos(-nx[mask])
+    angn[~mask] = 2.0 * np.pi - np.arccos(-nx[~mask])
 
-    # 差角规约到最小等效区间 (−π/m, π/m]
-    period = 2.0 * np.pi / m  # 对 m=4，period=π/2
-    delta = (phi - theta + period / 2) % period - period / 2
-
-    return 1.0 - (m * m - 1) * float(eps) * np.cos(m * delta)
+    ani = 1.0 - 15.0 * float(eps) * np.cos(float(m) * (angn - theta))
+    return ani
 
 
 def compute_equilibrium(
@@ -36,43 +31,36 @@ def compute_equilibrium(
     out_cls: np.ndarray | None = None,
     out_css: np.ndarray | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    依据局部平衡 T = T* 反解 C_L^* 与 C_S^*：
-      T* = T_L_eq + (C_L^* - C0) * m_L - Gamma * kappa * f(phi, theta)
-      => C_L^* = C0 + [T - T_L_eq + Gamma * kappa * f] / m_L
-         C_S^* = k0 * C_L^*
-    仅在界面带赋值。
-    """
+
     fs = grid.fs
     T = grid.T
     theta = grid.theta
 
     intf: np.ndarray = masks["intf"]
-    if intf.dtype != bool:
-        intf = intf.astype(bool, copy=False)
 
-    # 物性/模型参数（如未提供，给出温和默认）
+    # 物性/模型参数
     TL_eq = float(cfg.get("TL_eq", 1809.15))
-    C0 = float(domain_cfg.get("C0", 0.0))  # 初始浓度
-    mL = float(cfg.get("mL", -7800.0))  # 不能为 0
+    C0 = float(domain_cfg.get("C0", 0.0))
+    mL = float(cfg.get("mL", -7800.0))
     Gamma = float(cfg.get("Gamma", 1.9e-7))
     k0 = float(cfg.get("k0", 0.34))
     eps = float(cfg.get("eps_anis", 0.04))
 
-    # 法向/曲率：若未传入，则内部计算一次（便于独立使用）
+    # 法向
     nx, ny = normal
 
     # 各向异性因子
     ani = anisotropy_factor(nx, ny, theta, eps)
 
-    # 反解 C_L^* / C_S^*
-    num = (T - TL_eq) + Gamma * kappa * ani
+    # 输出缓冲
+    if out_cls is None:
+        out_cls = np.zeros_like(fs, dtype=np.float64)
+    if out_css is None:
+        out_css = np.zeros_like(fs, dtype=np.float64)
 
-    CLS = out_cls if out_cls is not None else np.zeros_like(fs, dtype=float)
-    CSS = out_css if out_css is not None else np.zeros_like(fs, dtype=float)
+    # 仅界面元胞赋值（不做任何保护/截断）
+    Cl8 = C0 + (T[intf] - TL_eq + Gamma * kappa[intf] * ani[intf]) / mL
+    out_cls[intf] = Cl8
+    out_css[intf] = k0 * Cl8
 
-    CLS[intf] = C0 + num[intf] / mL
-    CSS[intf] = k0 * CLS[intf]
-    grid.CS[intf] = k0 * CLS[intf]
-
-    return CLS, CSS
+    return out_cls, out_css

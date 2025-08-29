@@ -212,7 +212,6 @@ class Simulator:
                 # 3-3) 计算曲率
                 self.itf.curvature(
                     self.grid,
-                    self.cfg.get("physics", {}).get("interface", {}),
                     fields,
                     masks,
                 )
@@ -220,7 +219,6 @@ class Simulator:
                 # 3-4) 计算法向（圆质心法）
                 self.itf.normal(
                     self.grid,
-                    self.cfg.get("physics", {}).get("interface", {}),
                     fields,
                     masks,
                 )
@@ -237,8 +235,6 @@ class Simulator:
                     fields,
                     masks,
                 )
-                if False:
-                    dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
                 # dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
@@ -288,10 +284,10 @@ class Simulator:
                     self.live.update(self.grid, t, step)
 
             # 循环结束后保存一次
-            snapshot(self.grid, t, step, self.out)
-            dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
-            dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
-            dump_matrix(fields.vn, f"debug/Vn{step:06d}.csv")
+            # snapshot(self.grid, t, step, self.out)
+            # dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
+            # dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
+            # dump_matrix(fields.vn, f"debug/Vn{step:06d}.csv")
 
         except Exception:
             logger.exception("运行异常，保存事故快照以便排查")

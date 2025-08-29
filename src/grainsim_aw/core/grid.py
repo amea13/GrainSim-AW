@@ -1,8 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Optional
-from typing import Dict
-from typing import Mapping, Union
+from typing import Dict, Optional, Mapping, Union
 import numpy as np
 
 
@@ -19,16 +17,16 @@ class Grid:
     ecc_x: np.ndarray  # 偏心正方形中心相对本元胞几何中心的 x 偏移 [m]
     ecc_y: np.ndarray  # 同上 y 偏移 [m]
 
+    # —— 几何坐标（绝对坐标，包含 ghost）——
+    x: np.ndarray  # 元胞中心 x 坐标 [m]
+    y: np.ndarray  # 元胞中心 y 坐标 [m]
+
     # —— 网格几何 ——
     ny: int
     nx: int
     dx: float
     dy: float
     nghost: int
-
-    # —— 相阈值（用于三态掩码）——
-    tau_liq: float = 1e-12
-    tau_sol: float = 1.0 - 1e-12
 
     # —— 便捷属性 ——
     @property
@@ -61,19 +59,24 @@ def create_grid(domain_cfg: dict) -> Grid:
     ny, nx = int(domain_cfg["ny"]), int(domain_cfg["nx"])
     dx, dy = float(domain_cfg["dx"]), float(domain_cfg["dy"])
     g = int(domain_cfg.get("nghost", 3))
-    tau_liq = float(domain_cfg.get("tau_liq", 1e-12))
-    tau_sol = float(domain_cfg.get("tau_sol", 1.0 - 1e-12))
 
     # 持久字段统一初始化
     fs = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     CL = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     CS = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
-    gid = _alloc(ny, nx, g, dtype=np.int32, fill=0)  # 0=未分配
-    th = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 取向角
+    gid = _alloc(ny, nx, g, dtype=np.int32, fill=0)
+    th = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     Ldia = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
-    T = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 温度场
+    T = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     ecc_x = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     ecc_y = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+
+    # 绝对坐标（含 ghost）
+    Ny = ny + 2 * g
+    Nx = nx + 2 * g
+    x_coords = (np.arange(Nx) - g + 0.5) * dx  # core 从 0.5*dx 开始
+    y_coords = (np.arange(Ny) - g + 0.5) * dy
+    xx, yy = np.meshgrid(x_coords, y_coords)  # 形状 (Ny, Nx)
 
     return Grid(
         fs=fs,
@@ -85,23 +88,22 @@ def create_grid(domain_cfg: dict) -> Grid:
         T=T,
         ecc_x=ecc_x,
         ecc_y=ecc_y,
+        x=xx,
+        y=yy,
         ny=ny,
         nx=nx,
         dx=dx,
         dy=dy,
         nghost=g,
-        tau_liq=tau_liq,
-        tau_sol=tau_sol,
     )
 
 
 def update_ghosts(grid: Grid, bc: Union[str, Mapping[str, str]] = "neumann0") -> None:
     """
-    更新 ghost 带。
-    支持：
+    更新 ghost 带：
       - "neumann0"：零法向梯度（偶延拓）
       - "periodic"：周期
-    允许传入 dict：{"x": "...", "y": "..."} 分轴设置；未提供的轴沿用 "neumann0"。
+    说明：几何坐标 grid.x/grid.y 不更新（固定绝对坐标）。
     """
     g = grid.nghost
     if g == 0:
@@ -113,15 +115,13 @@ def update_ghosts(grid: Grid, bc: Union[str, Mapping[str, str]] = "neumann0") ->
         bcx = bc.get("x", "neumann0")
         bcy = bc.get("y", "neumann0")
 
-    # 需要处理的字段（若有不希望周期的字段，可在此排除或分开处理）
+    # 需要更新 ghost 的“场”
     fields = (grid.fs, grid.CL, grid.CS, grid.grain_id, grid.theta, grid.L_dia, grid.T)
 
     for arr in fields:
         # 垂直方向（y）
         if bcy == "neumann0":
-            # 顶部 ghost：取 [g:2g] 反向
             arr[:g, :] = arr[g : 2 * g, :][::-1, :]
-            # 底部 ghost：取 [-2g:-g] 反向
             arr[-g:, :] = arr[-2 * g : -g, :][::-1, :]
         elif bcy == "periodic":
             arr[:g, :] = arr[-2 * g : -g, :]
@@ -140,21 +140,19 @@ def update_ghosts(grid: Grid, bc: Union[str, Mapping[str, str]] = "neumann0") ->
             raise ValueError(f"不支持的 x 方向边界：{bcx!r}")
 
 
-def classify_phases(
-    grid,
-    tau_liq: Optional[float] = None,
-    tau_sol: Optional[float] = None,
-) -> Dict[str, np.ndarray]:
-    """返回包含 ghost 的三态掩码：'liq' | 'intf' | 'sol'。"""
-    tl = float(grid.tau_liq if tau_liq is None else tau_liq)
-    ts = float(grid.tau_sol if tau_sol is None else tau_sol)
-
+def classify_phases(grid) -> Dict[str, np.ndarray]:
+    """
+    三态掩码（包含 ghost）：
+      - 液相：fs == 0
+      - 固相：fs == 1
+      - 界面：其它
+    """
     fs = grid.fs
-    mask_liq = fs < tl
-    mask_sol = fs > ts
+    mask_liq = fs == 0.0
+    mask_sol = fs == 1.0
     mask_int = ~(mask_liq | mask_sol)
 
-    # 保证布尔 dtype（以防上游传奇怪类型）
+    # 保持布尔 dtype
     mask_liq = np.asarray(mask_liq, dtype=bool)
     mask_sol = np.asarray(mask_sol, dtype=bool)
     mask_int = np.asarray(mask_int, dtype=bool)
