@@ -18,6 +18,7 @@ class IfaceFieldsBuf:
     vx: FloatArr
     vy: FloatArr
     ani: FloatArr
+    test: FloatArr
 
     # —— 工厂 —— #
     @staticmethod
@@ -34,6 +35,7 @@ class IfaceFieldsBuf:
             vx=z(),
             vy=z(),
             ani=z(),
+            test=z(),
         )
 
     # —— 校验与维护 —— #
@@ -75,6 +77,7 @@ class IfaceFieldsBuf:
             ("vx", self.vx),
             ("vy", self.vy),
             ("ani", self.ani),
+            ("test", self.test),
         )
 
     # —— 清零 —— #

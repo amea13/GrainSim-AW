@@ -13,12 +13,17 @@ def L_n(nx: np.ndarray, ny: np.ndarray, dx: float, dy: float) -> np.ndarray:
     """
     Ny, Nx = nx.shape
     Ln = np.zeros_like(nx, dtype=np.float64)
+    angn = np.empty_like(nx, dtype=np.float64)
+    mask = ny >= 0.0
+
+    angn[mask] = np.arccos(-nx[mask])
+    angn[~mask] = 2.0 * np.pi - np.arccos(-nx[~mask])
 
     for i in range(Ny):
         for j in range(Nx):
             # |cos(angn)| = | -nx | = |nx|,  |sin(angn)| = |ny|
-            c = abs(nx[i, j])
-            s = abs(ny[i, j])
+            c = abs(np.cos(angn[i, j]))
+            s = abs(np.sin(angn[i, j]))
 
             if c >= s:
                 # |tan| = s / c
@@ -114,6 +119,7 @@ def advance_interface(
     Cs = grid.CS
     mask_int = masks.get("intf")
     k0 = float(cfg.get("k0", 0.34))
+    test = fields.test
 
     dx = float(grid.dx)
     dy = float(grid.dy)
@@ -138,9 +144,12 @@ def advance_interface(
     Cl_prev = Cl.copy()
     Cs_prev = Cs.copy()
 
-    if np.any(delta_fs[mask_int] > 1 - fs[mask_int]):
-        delta_fs[mask_int] = 1 - fs[mask_int]
+    delta_fs[mask_int] = np.minimum(delta_fs[mask_int], (1 - fs)[mask_int])
+
     fs[mask_int] = fs[mask_int] + delta_fs[mask_int]
+
+    # 如果界面带上的fs为1 更新对应的Cl为0
+    Cl[mask_int] = np.where(fs[mask_int] == 1, 0, Cl[mask_int])
 
     Cs[mask_int] = (
         Cs_prev[mask_int] * fs_prev[mask_int]

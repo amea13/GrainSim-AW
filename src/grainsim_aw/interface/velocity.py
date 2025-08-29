@@ -6,6 +6,7 @@ from ..core.material import Dl_from_T, Ds_from_T
 
 def compute_velocity(
     grid,
+    fields,
     cfg: Dict,
     masks: Dict[str, np.ndarray],
     *,

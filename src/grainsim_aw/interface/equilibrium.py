@@ -23,6 +23,7 @@ def anisotropy_factor(
 
 def compute_equilibrium(
     grid,
+    fields,
     masks: Dict[str, np.ndarray],
     cfg: Dict,
     domain_cfg: Dict,

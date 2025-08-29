@@ -80,7 +80,7 @@ from ..multiphysics.process import TransportProcess
 from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
 
-from ..io.csv_matrix import dump_matrix
+from ..io.csv_matrix import dump_grids_to_csv
 
 
 logger = logging.getLogger(__name__)
@@ -284,10 +284,8 @@ class Simulator:
                     self.live.update(self.grid, t, step)
 
             # 循环结束后保存一次
-            # snapshot(self.grid, t, step, self.out)
-            # dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
-            # dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
-            # dump_matrix(fields.vn, f"debug/Vn{step:06d}.csv")
+            snapshot(self.grid, t, step, self.out)
+            dump_grids_to_csv(self.grid, fields, f"./out/snap{step:06d}.csv")
 
         except Exception:
             logger.exception("运行异常，保存事故快照以便排查")

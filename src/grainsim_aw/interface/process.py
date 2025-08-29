@@ -24,6 +24,7 @@ class InterfaceProcess:
     ) -> None:
         compute_equilibrium(
             grid,
+            fields,
             masks,
             cfg,
             domain_cfg,
@@ -36,6 +37,7 @@ class InterfaceProcess:
     def velocity(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
         compute_velocity(
             grid,
+            fields,
             cfg,
             masks,
             normal=(fields.nx, fields.ny),
