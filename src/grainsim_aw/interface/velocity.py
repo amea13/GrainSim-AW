@@ -4,7 +4,7 @@ import numpy as np
 from ..core.material import Dl_from_T, Ds_from_T
 
 
-def compute_velocity1(
+def compute_velocity(
     grid,
     cfg: Dict,
     masks: Dict[str, np.ndarray],
@@ -107,7 +107,7 @@ def compute_velocity1(
     return Vn, Vx, Vy
 
 
-def compute_velocity(
+def compute_velocity1(
     grid,
     cfg: Dict,
     masks: Dict[str, np.ndarray],

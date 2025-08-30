@@ -73,6 +73,5 @@ def compute_equilibrium(
 
     CLS[intf] = C0 + num[intf] / mL
     CSS[intf] = k0 * CLS[intf]
-    grid.CS[intf] = k0 * CLS[intf]
 
     return CLS, CSS

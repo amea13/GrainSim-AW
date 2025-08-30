@@ -1,8 +1,8 @@
 # GrainSim-AW configuration (TOML)
 
 [domain]
-nx = 151
-ny = 151
+nx = 101
+ny = 101
 dx = 1e-6
 dy = 1e-6
 nghost = 3
@@ -13,8 +13,8 @@ x = "neumann0"
 y = "neumann0"
 
 [time]
-dt = 1e-4
-t_end = 3e-1
+dt = 1e-5
+t_end = 1e-1
 save_every = 1000000
 
 [run]

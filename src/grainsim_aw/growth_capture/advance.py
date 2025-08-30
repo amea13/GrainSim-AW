@@ -87,6 +87,8 @@ def advance_interface(
     返回 fs_dot（同 fields.fs_dot）。
     """
     fs = grid.fs
+    CL = grid.CL
+    CS = grid.CS
     mask_int = masks.get("intf")
     k0 = float(cfg.get("k0", 0.34))
 
@@ -109,78 +111,20 @@ def advance_interface(
 
     # 4) 原地更新 fs；界面满固后令 CL=0
     fs_prev = fs.copy()
+    CL_prev = CL.copy()
+    CS_prev = CS.copy()
     fs += delta_fs
 
-    m_newsol = mask_int.astype(bool) & (fs_prev < 1.0) & (fs >= 1.0)
-
-    # 关键：右侧也用相同掩码取数，保证维度一致
-    # grid.CS[m_newsol] = k0 * fields.cls[m_newsol]
-    grid.CL[m_newsol] = 0.0
+    CL[mask_int] = np.where(fs[mask_int] == 1.0, 0.0, CL[mask_int])
+    CS[mask_int] = (
+        CS_prev[mask_int] * fs_prev[mask_int]
+        + k0 * CL_prev[mask_int] * delta_fs[mask_int]
+    ) / (fs_prev[mask_int] + delta_fs[mask_int])
 
     # 5) 更新 ESVC 半对角线
     update_Ldia(grid, delta_fs, grid.theta)
 
     # 6) 输出给溶质源项
     fs_dot = delta_fs / dt
-    fields.fs_dot[...] = fs_dot
-    return fs_dot
-
-
-def advance_interface_substeps(
-    grid,
-    masks,
-    vn: np.ndarray,
-    dt: float,
-    cfg: Dict[str, Any],
-    fields,
-):
-    """
-    界面推进：把同一物理步 dt 细分成 M 个几何子步，仅细分 Δf_s 与 L_dia 的推进。
-    溶质/温度仍按整步处理；fs_dot 用总增量/整步时间。
-    """
-    fs = grid.fs
-
-    dx = float(grid.dx)
-    dy = float(grid.dy)
-
-    # 子步个数（默认 4；<1 时按 1 处理）
-    M = int(cfg.get("capture_substeps", 1))
-    if M < 1:
-        M = 1
-    dt_sub = dt / M
-
-    # 1) Ln 与 GF：先整场计算一次，子步内用即时掩码索引
-    Ln = L_n(fields.nx, fields.ny, dx, dy)
-    GF = shape_factor_GF(fs, grid.theta, masks)
-
-    # 2) 子步推进：每个子步使用“即时界面掩码”(0<fs<1)，逐步限幅并累计
-    eps = 1e-30
-    delta_fs_total = np.zeros_like(fs, dtype=float)
-
-    for _ in range(M):
-        mask_int_sub = (fs > 0.0) & (fs < 1.0)
-        if not np.any(mask_int_sub):
-            break
-
-        den = np.maximum(Ln[mask_int_sub], eps)
-        df = GF[mask_int_sub] * vn[mask_int_sub] * dt_sub / den
-
-        # 单向、限幅：不能减小，不能超过剩余
-        df = np.maximum(df, 0.0)
-        room = 1.0 - fs[mask_int_sub]
-        df = np.minimum(df, room)
-
-        # 写回：即时更新 + 累计
-        fs[mask_int_sub] += df
-        delta_fs_total[mask_int_sub] += df
-
-    # 3) 满固后置 CL=0
-    grid.CL[fs == 1.0] = 0.0
-
-    # 4) 更新 ESVC 半对角线：用本步总 Δf_s
-    update_Ldia(grid, delta_fs_total, grid.theta)
-
-    # 5) 输出给溶质源项
-    fs_dot = delta_fs_total / dt
     fields.fs_dot[...] = fs_dot
     return fs_dot
