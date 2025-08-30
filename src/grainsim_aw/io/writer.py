@@ -1,5 +1,5 @@
 from pathlib import Path
-import json
+import tomli_w
 import numpy as np
 from ..core.grid import Grid
 from typing import Optional, Dict
@@ -12,7 +12,7 @@ def prepare_out(output_dir: str) -> Path:
 
 
 def write_meta(cfg: dict, out: Path):
-    (out / "meta_config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    (out / "meta_config.toml").write_text(tomli_w.dumps(cfg), encoding="utf-8")
 
 
 def snapshot(
