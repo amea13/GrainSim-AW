@@ -5,52 +5,71 @@ import numpy as np
 __all__ = ["compute_curvature", "compute_normal"]
 
 
+def _viewer(a: np.ndarray, pad: int):
+    """
+    返回一个闭包 V(di, dj) -> 视图切片，等价于把 a 向下/右为正平移 (di,dj) 后
+    超界部分补 0（常数 0 填充），但不产生新大数组；避免频繁分配。
+    """
+    Ny, Nx = a.shape
+    ap = np.pad(a, pad_width=pad, mode="constant", constant_values=0.0)
+    base_i = pad
+    base_j = pad
+
+    def V(di: int, dj: int) -> np.ndarray:
+        i0 = base_i + di
+        j0 = base_j + dj
+        return ap[i0 : i0 + Ny, j0 : j0 + Nx]  # 纯视图
+
+    return V
+
+
 def compute_curvature(
     grid,
     masks: Dict[str, np.ndarray],
     out: Optional[np.ndarray] = None,
 ):
     """
-    dfsdx  = (fs[i, j+1] - fs[i, j-1]) / (2*dx)
-    dfsdy  = (fs[i+1, j] - fs[i-1, j]) / (2*dx)
-    dfs2dx = (fs[i, j+1] + fs[i, j-1] - 2*fs[i, j]) / dx^2
-    dfs2dy = (fs[i+1, j] + fs[i-1, j] - 2*fs[i, j]) / dx^2
-    dfsdxdy= (fs[i-1, j+1] + fs[i+1, j-1] - fs[i-1, j-1] - fs[i+1, j+1]) / (4*dx^2)
-    cur    = (2*dfsdx*dfsdy*dfsdxdy - dfs2dx*dfsdy^2 - dfs2dy*dfsdx^2) / sqrt((dfsdx^2+dfsdy^2)^3)
+    计算 fs 的曲率，使用二阶中心差分的标准公式。
     """
-    fs = grid.fs
-    Ny, Nx = fs.shape
+    fs = grid.fs.astype(np.float64, copy=False)
+    mask = masks["intf"]
 
     if out is None:
         out = np.zeros_like(fs, dtype=np.float64)
+    else:
+        out.fill(0.0)
 
-    mask_intf = masks["intf"]
-
-    dx = float(grid.dx)  # 对应 C++ 的 len
+    dx = float(grid.dx)
     dx2 = dx * dx
 
-    for i in range(Ny):
-        for j in range(Nx):
-            if not mask_intf[i, j]:
-                continue
+    # 只需 pad=1 就能覆盖 ±1 及对角偏移
+    V = _viewer(fs, pad=1)
 
-            im, ip = i - 1, i + 1
-            jm, jp = j - 1, j + 1
+    fs_ip = V(+1, 0)
+    fs_im = V(-1, 0)
+    fs_jp = V(0, +1)
+    fs_jm = V(0, -1)
 
-            dfsdx = (fs[i, jp] + (-fs[i, jm])) / (2.0 * dx)
-            dfsdy = (fs[ip, j] + (-fs[im, j])) / (2.0 * dx)
-            dfs2dx = (fs[i, jp] + fs[i, jm] - 2.0 * fs[i, j]) / dx2
-            dfs2dy = (fs[ip, j] + fs[im, j] - 2.0 * fs[i, j]) / dx2
-            dfsdxdy = (fs[im, jp] + fs[ip, jm] - fs[im, jm] - fs[ip, jp]) / (4.0 * dx2)
+    dfsdx = (fs_jp - fs_jm) / (2.0 * dx)
+    dfsdy = (fs_ip - fs_im) / (2.0 * dx)
+    dfs2dx = (fs_jp + fs_jm - 2.0 * fs) / dx2
+    dfs2dy = (fs_ip + fs_im - 2.0 * fs) / dx2
 
-            num = (
-                2.0 * dfsdx * dfsdy * dfsdxdy
-                - dfs2dx * (dfsdy * dfsdy)
-                - dfs2dy * (dfsdx * dfsdx)
-            )
-            den_base = dfsdx * dfsdx + dfsdy * dfsdy
-            out[i, j] = num / np.sqrt(den_base * den_base * den_base)
+    fs_im_jp = V(-1, +1)
+    fs_ip_jm = V(+1, -1)
+    fs_im_jm = V(-1, -1)
+    fs_ip_jp = V(+1, +1)
+    dfsdxdy = (fs_im_jp + fs_ip_jm - fs_im_jm - fs_ip_jp) / (4.0 * dx2)
 
+    num = (
+        2.0 * dfsdx * dfsdy * dfsdxdy
+        - dfs2dx * (dfsdy * dfsdy)
+        - dfs2dy * (dfsdx * dfsdx)
+    )
+    den_base = dfsdx * dfsdx + dfsdy * dfsdy
+    curv = num / np.sqrt(den_base * den_base * den_base)
+
+    out[mask] = curv[mask]
     return out
 
 
@@ -61,129 +80,73 @@ def compute_normal(
     out_ny: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    - 仅对 masks['intf'] 为 True 的元胞计算；
-    - 使用 5x5 窗 + 半径3圈的三组权重(1.0, 0.83, 0.65)；
-    - 直接写入 out_nx/out_ny
-    依赖 grid.fs、grid.x、grid.y 三个二维数组。
+    完全忠实原累加顺序（5x5，轴向±3，马步±(3,1)，马步±(3,2)），
+    仅把逐元胞循环改成“偏移视图逐项累计”。
     """
+    fs = grid.fs.astype(np.float64, copy=False)
+    x = grid.x.astype(np.float64, copy=False)
+    y = grid.y.astype(np.float64, copy=False)
+    mask = masks["intf"]
 
-    fs = grid.fs
-    x = grid.x  # 对应 C++: cell[i][j].x
-    y = grid.y  # 对应 C++: cell[i][j].y
+    fx = fs * x
+    fy = fs * y
 
-    mask_intf = masks["intf"]  # 按你的约束，不做兜底
+    xfz = np.zeros_like(fs, dtype=np.float64)
+    yfz = np.zeros_like(fs, dtype=np.float64)
+    fm = np.zeros_like(fs, dtype=np.float64)
 
-    Ny, Nx = fs.shape
+    # 需要用到 ±3 的偏移，pad=3 即可
+    Vf = _viewer(fs, pad=3)
+    Vfx = _viewer(fx, pad=3)
+    Vfy = _viewer(fy, pad=3)
 
-    # 遍历全域；是否计算由 mask 决定（不强加 i=2..ROWS+1 的显式范围）
-    for i in range(Ny):
-        for j in range(Nx):
-            if not mask_intf[i, j]:
-                continue
+    def _acc(di: int, dj: int, w: float) -> None:
+        # 逐项 add，保持与原实现相同的求和顺序（减少浮点尾差）
+        np.add(xfz, w * Vfx(di, dj), out=xfz)
+        np.add(yfz, w * Vfy(di, dj), out=yfz)
+        np.add(fm, w * Vf(di, dj), out=fm)
 
-            # 对应 C++: if (cell[i][j].sta == 0) {...}
-            # 下面完全照搬其加权累计写法
-            xfz = 0.0
-            yfz = 0.0
-            fm = 0.0
+    # 5x5 窗（权重 1.0）——严格按原先双循环的行优先顺序
+    for di in (-2, -1, 0, 1, 2):
+        for dj in (-2, -1, 0, 1, 2):
+            _acc(di, dj, 1.0)
 
-            # 5x5 窗（权重 1.0）
-            for n in range(5):  # n = 0..4
-                for m in range(5):  # m = 0..4
-                    ii = i + (n - 2)
-                    jj = j + (m - 2)
-                    fij = fs[ii, jj]
-                    xfz += fij * 1.0 * x[ii, jj]
-                    yfz += fij * 1.0 * y[ii, jj]
-                    fm += fij * 1.0
+    # 半径 3，轴向（权重 1.0）
+    _acc(-3, 0, 1.0)
+    _acc(0, -3, 1.0)
+    _acc(+3, 0, 1.0)
+    _acc(0, +3, 1.0)
 
-            # 半径 3，轴向（权重 1.0）
-            xfz += (
-                fs[i - 3, j] * x[i - 3, j]
-                + fs[i, j - 3] * x[i, j - 3]
-                + fs[i + 3, j] * x[i + 3, j]
-                + fs[i, j + 3] * x[i, j + 3]
-            ) * 1.0
-            yfz += (
-                fs[i - 3, j] * y[i - 3, j]
-                + fs[i, j - 3] * y[i, j - 3]
-                + fs[i + 3, j] * y[i + 3, j]
-                + fs[i, j + 3] * y[i, j + 3]
-            ) * 1.0
-            fm += (fs[i - 3, j] + fs[i, j - 3] + fs[i + 3, j] + fs[i, j + 3]) * 1.0
+    # 半径 3，“马步”1格（权重 0.83）——保持原有累计顺序
+    _acc(-3, +1, 0.83)
+    _acc(-3, -1, 0.83)
+    _acc(+3, +1, 0.83)
+    _acc(+3, -1, 0.83)
+    _acc(+1, -3, 0.83)
+    _acc(-1, -3, 0.83)
+    _acc(+1, +3, 0.83)
+    _acc(-1, +3, 0.83)
 
-            # 半径 3，“马步”1格（权重 0.83）
-            xfz += (
-                fs[i - 3, j + 1] * x[i - 3, j + 1]
-                + fs[i - 3, j - 1] * x[i - 3, j - 1]
-                + fs[i + 3, j + 1] * x[i + 3, j + 1]
-                + fs[i + 3, j - 1] * x[i + 3, j - 1]
-                + fs[i + 1, j - 3] * x[i + 1, j - 3]
-                + fs[i - 1, j - 3] * x[i - 1, j - 3]
-                + fs[i + 1, j + 3] * x[i + 1, j + 3]
-                + fs[i - 1, j + 3] * x[i - 1, j + 3]
-            ) * 0.83
-            yfz += (
-                fs[i - 3, j + 1] * y[i - 3, j + 1]
-                + fs[i - 3, j - 1] * y[i - 3, j - 1]
-                + fs[i + 3, j + 1] * y[i + 3, j + 1]
-                + fs[i + 3, j - 1] * y[i + 3, j - 1]
-                + fs[i + 1, j - 3] * y[i + 1, j - 3]
-                + fs[i - 1, j - 3] * y[i - 1, j - 3]
-                + fs[i + 1, j + 3] * y[i + 1, j + 3]
-                + fs[i - 1, j + 3] * y[i - 1, j + 3]
-            ) * 0.83
-            fm += (
-                fs[i - 3, j + 1]
-                + fs[i - 3, j - 1]
-                + fs[i + 3, j + 1]
-                + fs[i + 3, j - 1]
-                + fs[i + 1, j - 3]
-                + fs[i - 1, j - 3]
-                + fs[i + 1, j + 3]
-                + fs[i - 1, j + 3]
-            ) * 0.83
+    # 半径 3，“马步”2格（权重 0.65）
+    _acc(-3, +2, 0.65)
+    _acc(-3, -2, 0.65)
+    _acc(+3, +2, 0.65)
+    _acc(+3, -2, 0.65)
+    _acc(+2, -3, 0.65)
+    _acc(-2, -3, 0.65)
+    _acc(+2, +3, 0.65)
+    _acc(-2, +3, 0.65)
 
-            # 半径 3，“马步”2格（权重 0.65）
-            xfz += (
-                fs[i - 3, j + 2] * x[i - 3, j + 2]
-                + fs[i - 3, j - 2] * x[i - 3, j - 2]
-                + fs[i + 3, j + 2] * x[i + 3, j + 2]
-                + fs[i + 3, j - 2] * x[i + 3, j - 2]
-                + fs[i + 2, j - 3] * x[i + 2, j - 3]
-                + fs[i - 2, j - 3] * x[i - 2, j - 3]
-                + fs[i + 2, j + 3] * x[i + 2, j + 3]
-                + fs[i - 2, j + 3] * x[i - 2, j + 3]
-            ) * 0.65
-            yfz += (
-                fs[i - 3, j + 2] * y[i - 3, j + 2]
-                + fs[i - 3, j - 2] * y[i - 3, j - 2]
-                + fs[i + 3, j + 2] * y[i + 3, j + 2]
-                + fs[i + 3, j - 2] * y[i + 3, j - 2]
-                + fs[i + 2, j - 3] * y[i + 2, j - 3]
-                + fs[i - 2, j - 3] * y[i - 2, j - 3]
-                + fs[i + 2, j + 3] * y[i + 2, j + 3]
-                + fs[i - 2, j + 3] * y[i - 2, j + 3]
-            ) * 0.65
-            fm += (
-                fs[i - 3, j + 2]
-                + fs[i - 3, j - 2]
-                + fs[i + 3, j + 2]
-                + fs[i + 3, j - 2]
-                + fs[i + 2, j - 3]
-                + fs[i - 2, j - 3]
-                + fs[i + 2, j + 3]
-                + fs[i - 2, j + 3]
-            ) * 0.65
+    # 只在界面元胞写回
+    xb = np.empty_like(fs, dtype=np.float64)
+    yb = np.empty_like(fs, dtype=np.float64)
+    xb[mask] = xfz[mask] / fm[mask]
+    yb[mask] = yfz[mask] / fm[mask]
 
-            xb = xfz / fm
-            yb = yfz / fm
+    dxv = x[mask] - xb[mask]
+    dyv = y[mask] - yb[mask]
+    AB = np.sqrt(dxv * dxv + dyv * dyv)
 
-            AB = (
-                (x[i, j] - xb) * (x[i, j] - xb) + (y[i, j] - yb) * (y[i, j] - yb)
-            ) ** 0.5
-
-            out_nx[i, j] = (x[i, j] - xb) / AB
-            out_ny[i, j] = (y[i, j] - yb) / AB
-
+    out_nx[mask] = dxv / AB
+    out_ny[mask] = dyv / AB
     return out_nx, out_ny

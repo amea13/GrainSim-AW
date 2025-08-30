@@ -1,6 +1,18 @@
 from typing import Dict, Tuple, Optional
 import numpy as np
-from ..core.material import Dl_from_T, Ds_from_T  # 你已有
+from ..core.material import Dl_from_T, Ds_from_T
+
+
+def _viewer(a: np.ndarray, pad: int = 1):
+    """非环绕平移视图：越界补 0（只用在取邻居时；核心区不受影响）。"""
+    Ny, Nx = a.shape
+    ap = np.pad(a, pad_width=pad, mode="constant", constant_values=0.0)
+    base = pad
+
+    def V(di: int, dj: int) -> np.ndarray:
+        return ap[base + di : base + di + Ny, base + dj : base + dj + Nx]
+
+    return V
 
 
 def step_solute(
@@ -11,14 +23,13 @@ def step_solute(
     fs_dot: np.ndarray,  # 本步 df_s/dt（与 grid 形状一致，含 ghost）
 ) -> None:
     """
-    纯 C++ 风格推进溶质场（显式一次迭代）：
-      - 计算液相/固相导通系数（Cla/Csa）
-      - 应用域边界无扩散（Cl0）
-      - 计算 aCl0（Clap0/Csap0）
-      - 用 precell（上一步浓度）显式更新 Cl/Cs
-    不做任何数值保护或裁剪；依赖 ghost 可用；要求 nghost ≥ 1。
+    显式一次推进（与原 C++/Python 循环版逐元素等价）：
+      - 计算 Cla/Csa 与成对源 Clbp
+      - 第一圈 core 单元施加无扩散边界（清零对应面导通）
+      - 重新计算 Clap0/Csap0
+      - 用上一步浓度（precell）显式更新 CL/CS
+    不做数值保护或裁剪；依赖 ghost 可用；要求 nghost ≥ 1。
     """
-
     fs = grid.fs
     CL = grid.CL
     CS = grid.CS
@@ -26,184 +37,144 @@ def step_solute(
     dx = float(grid.dx)
     dy = float(grid.dy)
     g = int(grid.nghost)
-
     Ny, Nx = fs.shape
 
-    # ---- 显式所需：precell（上一时刻） ----
+    # —— 上一步浓度（precell） ——
     CL_prev = CL.copy()
     CS_prev = CS.copy()
 
-    # ---- Dl/Ds 取中心温度 ----
-    DL = Dl_from_T(T)
-    DS = Ds_from_T(T)
+    # —— 物性（中心温度） ——
+    DL = Dl_from_T(T).astype(np.float64, copy=False)
+    DS = Ds_from_T(T).astype(np.float64, copy=False)
 
-    # ---- k 与体元体积 ----
+    # —— 常量系数 ——
     k = float(cfg.get("k", 0.34))
     Vc = dx * dy
 
-    # ---- sta 从 fs 判定：-1 液相 / 0 界面 / 1 固相 ----
+    # —— 相位标记：-1 液 / 0 界面 / 1 固 ——
     sta = np.zeros_like(fs, dtype=np.int8)
     sta[fs == 0.0] = -1
     sta[fs == 1.0] = 1
-    # 其余保持 0
+    liq_or_int = sta <= 0  # -1 或 0
+    sol_or_int = sta >= 0  #  0 或 1
 
-    # ---- 系数场（全域分配，逐格写）----
-    Clae0 = np.zeros_like(fs, dtype=np.float64)
-    Claw0 = np.zeros_like(fs, dtype=np.float64)
-    Clan0 = np.zeros_like(fs, dtype=np.float64)
-    Clas0 = np.zeros_like(fs, dtype=np.float64)
-    Clap1 = np.zeros_like(fs, dtype=np.float64)
-    Clap0 = np.zeros_like(fs, dtype=np.float64)
-    Clbp = np.zeros_like(fs, dtype=np.float64)
+    # —— 邻居视图（一次 pad） ——
+    V_sta = _viewer(sta, pad=1)
+    V_CLp = _viewer(CL_prev, pad=1)
+    V_CSp = _viewer(CS_prev, pad=1)
 
-    Csae0 = np.zeros_like(fs, dtype=np.float64)
-    Csaw0 = np.zeros_like(fs, dtype=np.float64)
-    Csan0 = np.zeros_like(fs, dtype=np.float64)
-    Csas0 = np.zeros_like(fs, dtype=np.float64)
-    Csap1 = np.zeros_like(fs, dtype=np.float64)
-    Csap0 = np.zeros_like(fs, dtype=np.float64)
+    # 邻居状态布尔
+    nb_sol_E = V_sta(0, +1) == 1
+    nb_sol_W = V_sta(0, -1) == 1
+    nb_sol_N = V_sta(-1, 0) == 1
+    nb_sol_S = V_sta(+1, 0) == 1
 
-    # 方便：核心区索引范围（含边界第一圈）
+    nb_liq_E = V_sta(0, +1) == -1
+    nb_liq_W = V_sta(0, -1) == -1
+    nb_liq_N = V_sta(-1, 0) == -1
+    nb_liq_S = V_sta(+1, 0) == -1
+
+    # —— 面导通系数（初始化为 0，再按相位填） ——
+    shape = fs.shape
+    Clae0 = np.zeros(shape, dtype=np.float64)  # 东
+    Claw0 = np.zeros(shape, dtype=np.float64)  # 西
+    Clan0 = np.zeros(shape, dtype=np.float64)  # 北
+    Clas0 = np.zeros(shape, dtype=np.float64)  # 南
+
+    Csae0 = np.zeros(shape, dtype=np.float64)
+    Csaw0 = np.zeros(shape, dtype=np.float64)
+    Csan0 = np.zeros(shape, dtype=np.float64)
+    Csas0 = np.zeros(shape, dtype=np.float64)
+
+    # 液/界面：初值
+    base_ew_L = DL * dy / dx
+    base_ns_L = DL * dx / dy
+    Clae0[liq_or_int] = base_ew_L[liq_or_int]
+    Claw0[liq_or_int] = base_ew_L[liq_or_int]
+    Clan0[liq_or_int] = base_ns_L[liq_or_int]
+    Clas0[liq_or_int] = base_ns_L[liq_or_int]
+    # 邻居为固 → 清零对应面
+    Clae0[nb_sol_E] = 0.0
+    Claw0[nb_sol_W] = 0.0
+    Clan0[nb_sol_N] = 0.0
+    Clas0[nb_sol_S] = 0.0
+
+    # 固/界面：初值
+    base_ew_S = DS * dy / dx
+    base_ns_S = DS * dx / dy
+    Csae0[sol_or_int] = base_ew_S[sol_or_int]
+    Csaw0[sol_or_int] = base_ew_S[sol_or_int]
+    Csan0[sol_or_int] = base_ns_S[sol_or_int]
+    Csas0[sol_or_int] = base_ns_S[sol_or_int]
+    # 邻居为液 → 清零对应面
+    Csae0[nb_liq_E] = 0.0
+    Csaw0[nb_liq_W] = 0.0
+    Csan0[nb_liq_N] = 0.0
+    Csas0[nb_liq_S] = 0.0
+
+    # —— 系数 p1 / p0（初始化） ——
+    Clap1 = np.zeros(shape, dtype=np.float64)
+    Csap1 = np.zeros(shape, dtype=np.float64)
+    Clap1[liq_or_int] = Vc / dt
+    Csap1[sol_or_int] = Vc / dt
+
+    # 初值下的 p0（稍后边界清零后还会重算一遍，等价于原代码）
+    Clap0 = Clap1 - (Clae0 + Claw0 + Clan0 + Clas0)
+    Csap0 = Csap1 - (Csae0 + Csaw0 + Csan0 + Csas0)
+
+    # —— 第一圈 core 单元的无扩散边界（等价 Cl0()） ——
     is_beg, is_end = g, Ny - g
     js_beg, js_end = g, Nx - g
+    iT, iB = is_beg, is_end - 1
+    jL, jR = js_beg, js_end - 1
 
-    # ========================
-    # 1) Cla：液相系数 + 源项 Clbp
-    # ========================
-    for i in range(is_beg, is_end):
-        im, ip = i - 1, i + 1
-        for j in range(js_beg, js_end):
-            jm, jp = j - 1, j + 1
+    # 左/右边界：清零西/东面
+    Claw0[is_beg:is_end, jL] = 0.0
+    Clae0[is_beg:is_end, jR] = 0.0
+    Csaw0[is_beg:is_end, jL] = 0.0
+    Csae0[is_beg:is_end, jR] = 0.0
 
-            if sta[i, j] == -1 or sta[i, j] == 0:
-                # 初值
-                Clae0[i, j] = DL[i, j] * dy / dx
-                Claw0[i, j] = DL[i, j] * dy / dx
-                Clan0[i, j] = DL[i, j] * dx / dy
-                Clas0[i, j] = DL[i, j] * dx / dy
+    # 上/下边界：清零北/南面
+    Clan0[iT, js_beg:js_end] = 0.0
+    Clas0[iB, js_beg:js_end] = 0.0
+    Csan0[iT, js_beg:js_end] = 0.0
+    Csas0[iB, js_beg:js_end] = 0.0
 
-                # 邻居为固相 → 对应面导通置零
-                if sta[ip, j] == 1:
-                    Clas0[i, j] = 0.0
-                if sta[im, j] == 1:
-                    Clan0[i, j] = 0.0
-                if sta[i, jp] == 1:
-                    Clae0[i, j] = 0.0
-                if sta[i, jm] == 1:
-                    Claw0[i, j] = 0.0
+    # —— 边界处理后重新计算 p0（等价 aCl0()） ——
+    Clap0 = Clap1 - (Clae0 + Claw0 + Clan0 + Clas0)
+    Csap0 = Csap1 - (Csae0 + Csaw0 + Csan0 + Csas0)
 
-                # 系数 p1 / p0
-                Clap1[i, j] = Vc / dt
-                Clap0[i, j] = (
-                    Clap1[i, j] - Clae0[i, j] - Claw0[i, j] - Clan0[i, j] - Clas0[i, j]
-                )
+    # —— 成对源：Clbp = CL * (1-k) * fs_dot * Vc（此时 CL 仍是上一步值） ——
+    Clbp = CL_prev * (1.0 - k) * fs_dot * Vc
 
-                # 成对源：Clbp = Cl * (1-k) * delta_fs * dx*dy / dt
-                # 其中 delta_fs = fs_dot * dt
-                Clbp[i, j] = CL[i, j] * (1.0 - k) * fs_dot[i, j] * Vc
+    # —— 邻居浓度（上一步） ——
+    CLp_E, CLp_W = V_CLp(0, +1), V_CLp(0, -1)
+    CLp_N, CLp_S = V_CLp(-1, 0), V_CLp(+1, 0)
 
-    # ========================
-    # 2) Csa：固相系数
-    # ========================
-    for i in range(is_beg, is_end):
-        im, ip = i - 1, i + 1
-        for j in range(js_beg, js_end):
-            jm, jp = j - 1, j + 1
+    CSp_E, CSp_W = V_CSp(0, +1), V_CSp(0, -1)
+    CSp_N, CSp_S = V_CSp(-1, 0), V_CSp(+1, 0)
 
-            if sta[i, j] == 1 or sta[i, j] == 0:
-                # 初值
-                Csae0[i, j] = DS[i, j] * dy / dx
-                Csaw0[i, j] = DS[i, j] * dy / dx
-                Csan0[i, j] = DS[i, j] * dx / dy
-                Csas0[i, j] = DS[i, j] * dx / dy
+    # —— 显式更新：仅 core 区（等价于 i=g..Ny-g-1, j=g..Nx-g-1） ——
+    core = (slice(is_beg, is_end), slice(js_beg, js_end))
 
-                # 邻居为液相 → 对应面导通置零
-                if sta[ip, j] == -1:
-                    Csas0[i, j] = 0.0
-                if sta[im, j] == -1:
-                    Csan0[i, j] = 0.0
-                if sta[i, jp] == -1:
-                    Csae0[i, j] = 0.0
-                if sta[i, jm] == -1:
-                    Csaw0[i, j] = 0.0
+    # Cl：只在液/界面（liq_or_int）位置更新
+    num_CL = (
+        Clae0 * CLp_E
+        + Claw0 * CLp_W
+        + Clan0 * CLp_N
+        + Clas0 * CLp_S
+        + Clap0 * CL_prev
+        + Clbp
+    )
+    m_CL = liq_or_int & False  # 占位，下面切 core 再筛
+    # 写回（避免非 core 位置）
+    c0, c1 = core
+    m_liq_core = liq_or_int[c0, c1]
+    CL[c0, c1][m_liq_core] = num_CL[c0, c1][m_liq_core] / Clap1[c0, c1][m_liq_core]
 
-                # 系数 p1 / p0
-                Csap1[i, j] = Vc / dt
-                Csap0[i, j] = (
-                    Csap1[i, j] - Csae0[i, j] - Csaw0[i, j] - Csan0[i, j] - Csas0[i, j]
-                )
-
-    # ========================
-    # 3) 域边界无扩散（等价于 C++ 的 Cl0()）
-    #    在“第一圈 core 单元”把面导通清零
-    # ========================
-    # 左/右边界：j = g / j = Nx-g-1
-    jL = js_beg
-    jR = js_end - 1
-    for i in range(is_beg, is_end):
-        # 液相系数
-        Claw0[i, jL] = 0.0
-        Clae0[i, jR] = 0.0
-        # 固相系数
-        Csaw0[i, jL] = 0.0
-        Csae0[i, jR] = 0.0
-
-    # 上/下边界：i = g / i = Ny-g-1
-    iT = is_beg
-    iB = is_end - 1
-    for j in range(js_beg, js_end):
-        # 液相系数
-        Clan0[iT, j] = 0.0
-        Clas0[iB, j] = 0.0
-        # 固相系数
-        Csan0[iT, j] = 0.0
-        Csas0[iB, j] = 0.0
-
-    # ========================
-    # 4) 重新计算 Clap0 / Csap0（等价 aCl0()）
-    # ========================
-    for i in range(is_beg, is_end):
-        for j in range(js_beg, js_end):
-            Clap0[i, j] = (
-                Clap1[i, j] - Clae0[i, j] - Claw0[i, j] - Clan0[i, j] - Clas0[i, j]
-            )
-            Csap0[i, j] = (
-                Csap1[i, j] - Csae0[i, j] - Csaw0[i, j] - Csan0[i, j] - Csas0[i, j]
-            )
-
-    # ========================
-    # 5) 显式更新：Cl()
-    # ========================
-    for i in range(is_beg, is_end):
-        im, ip = i - 1, i + 1
-        for j in range(js_beg, js_end):
-            jm, jp = j - 1, j + 1
-
-            if sta[i, j] == -1 or sta[i, j] == 0:
-                num = (
-                    Clae0[i, j] * CL_prev[i, jp]
-                    + Claw0[i, j] * CL_prev[i, jm]
-                    + Clan0[i, j] * CL_prev[im, j]
-                    + Clas0[i, j] * CL_prev[ip, j]
-                    + Clap0[i, j] * CL_prev[i, j]
-                    + Clbp[i, j]
-                )
-                CL[i, j] = num / Clap1[i, j]
-
-    # ========================
-    # 6) 显式更新：Cs()
-    # ========================
-    for i in range(is_beg, is_end):
-        im, ip = i - 1, i + 1
-        for j in range(js_beg, js_end):
-            jm, jp = j - 1, j + 1
-
-            if sta[i, j] == 1 or sta[i, j] == 0:
-                num = (
-                    Csae0[i, j] * CS_prev[i, jp]
-                    + Csaw0[i, j] * CS_prev[i, jm]
-                    + Csan0[i, j] * CS_prev[im, j]
-                    + Csas0[i, j] * CS_prev[ip, j]
-                    + Csap0[i, j] * CS_prev[i, j]
-                )
-                CS[i, j] = num / Csap1[i, j]
+    # Cs：只在固/界面（sol_or_int）位置更新
+    num_CS = (
+        Csae0 * CSp_E + Csaw0 * CSp_W + Csan0 * CSp_N + Csas0 * CSp_S + Csap0 * CS_prev
+    )
+    m_sol_core = sol_or_int[c0, c1]
+    CS[c0, c1][m_sol_core] = num_CS[c0, c1][m_sol_core] / Csap1[c0, c1][m_sol_core]

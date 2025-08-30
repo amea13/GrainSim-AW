@@ -30,6 +30,55 @@ def _cell_center_abs(
 EPS = 1e-12
 
 
+def _ray_exit_length_inside_cell(x0, y0, xC, yC, dx, dy, ux, uy, eps=EPS):
+    """从 (x0,y0) 沿单位方向 (ux,uy) 在轴对齐矩形 [xC±dx/2]×[yC±dy/2] 内前进到边界的长度。"""
+    hx, hy = 0.5 * dx, 0.5 * dy
+    x_min, x_max = xC - hx, xC + hx
+    y_min, y_max = yC - hy, yC + hy
+
+    tx = (
+        np.inf
+        if abs(ux) <= eps
+        else ((x_max - x0) / ux if ux > 0.0 else (x_min - x0) / ux)
+    )
+    ty = (
+        np.inf
+        if abs(uy) <= eps
+        else ((y_max - y0) / uy if uy > 0.0 else (y_min - y0) / uy)
+    )
+
+    t_exit = min(tx, ty)
+    return float(max(t_exit, 0.0))
+
+
+def _pick_arm_direction_by_parent(th, x0, y0, xP, yP):
+    """
+    在 {θ, θ+90°, θ+180°, θ+270°} 中选一个方向，使其与父胞中心方向最一致。
+    返回 (ux, uy, th_sel, idx)。
+    """
+    base = np.array([np.cos(th), np.sin(th)], dtype=float)
+    R90 = np.array([[0.0, -1.0], [1.0, 0.0]], dtype=float)
+
+    # 四个候选单位向量
+    cands = [base, R90 @ base, -base, -(R90 @ base)]  # θ  # θ+90°  # θ+180°  # θ+270°
+
+    # 从胜出顶点指向父胞中心的单位向量
+    v = np.array([xP - x0, yP - y0], dtype=float)
+    nv = np.linalg.norm(v)
+    if nv <= EPS:
+        idx = 0
+    else:
+        v /= nv
+        dots = [float(v @ c) for c in cands]
+        idx = int(np.argmax(dots))
+
+    ux, uy = cands[idx]
+    th_sel = th + idx * (np.pi / 2.0)
+    # 角度规约到 [-π, π)
+    th_sel = float((th_sel + np.pi) % (2.0 * np.pi) - np.pi)
+    return ux, uy, th_sel, idx
+
+
 def compute_verts(grid, masks: Dict[str, np.ndarray]) -> Verts:
     """
     基于偏心中心 (ecc_x,ecc_y)、取向 theta 与半对角线 L_dia，计算四个顶点绝对坐标。
@@ -210,7 +259,7 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
         # 继承 grain_id / theta
         gid[w.child_i, w.child_j] = w.gid
         theta[w.child_i, w.child_j] = w.theta
-        Cs[w.child_i, w.child_j] = float(Cs[w.parent_i, w.parent_j])
+        # Cs[w.child_i, w.child_j] = float(Cs[w.parent_i, w.parent_j])
 
         # 父/子中心与胜出顶点
         ci, cj = w.child_i, w.child_j
@@ -218,14 +267,31 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
         xP, yP = _cell_center_abs(w.parent_i, w.parent_j, dx, dy, i0, j0)
         x0, y0 = w.xv, w.yv
 
+        # 捕捉时设置子胞固相浓度：Cs_child = k0 * Cl_child
+        Cs[ci, cj] = k0 * Cl[ci, cj]
+
         # 统一用父胞取向角
         th_parent = float(theta[w.parent_i, w.parent_j])
+        ux, uy, th_sel, _ = _pick_arm_direction_by_parent(th_parent, x0, y0, xP, yP)
+
+        # 在选中方向上求 s_fwd
+        s_fwd = _ray_exit_length_inside_cell(x0, y0, xC, yC, dx, dy, ux, uy)
 
         # 归一化
-        fs_seed = 0.00001
-        fs[ci, cj] = fs_seed
+        den = max(abs(np.cos(th_sel)), abs(np.sin(th_sel)), 1e-12)
+        Lmax = dx / den
+        r = float(np.clip(s_fwd / Lmax, 0.0, 1.0))
+        fs_floor = float(cfg.get("capture_seed_fs_min", 0.001))
+        fs_seed = max(r, fs_floor)
 
         # 先继承角度再写 geometry
         theta[ci, cj] = th_parent
         ecc_x[ci, cj] = x0 - xC
         ecc_y[ci, cj] = y0 - yC
+
+        # 只抬高
+        if fs_seed > fs[ci, cj]:
+            fs[ci, cj] = fs_seed
+        Ldia_seed = max(s_fwd, fs_floor * Lmax)
+        if Ldia_seed > L_dia[ci, cj]:
+            L_dia[ci, cj] = Ldia_seed

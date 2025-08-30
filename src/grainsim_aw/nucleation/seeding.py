@@ -114,10 +114,11 @@ def _infect_ring_by_vertices(
         ecc_y[ci, cj] = yv - yc
 
         # 几何初始化
-        fs[ci, cj] = 0.00001
+        fs[ci, cj] = max(fs[ci, cj], fs_child)
+        Ldia[ci, cj] = max(Ldia[ci, cj], fs[ci, cj] * _Ldia_max(th[ci, cj], dx))
 
         # 溶质初始化：界面平衡 CS = k0 * CL（不改 CL）
-        CS[ci, cj] = CS[i0, j0]
+        CS[ci, cj] = k0 * CL[ci, cj]
 
         placed += 1
 
@@ -238,7 +239,7 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]):
         fs[i0, j0] = 1.0
         ecc_x[i0, j0] = 0.0
         ecc_y[i0, j0] = 0.0
-        Ldia[i0, j0] = dx / 2 / np.cos(th[i0, j0]) + 1e-10
+        Ldia[i0, j0] = _Ldia_max(theta0, dx)
 
         # —— 溶质初始化（核心）：CS = k0 * CL_old；CL = 0 —— #
         CL_old = CL[i0, j0]

@@ -1,6 +1,6 @@
 [domain]
-nx = 31
-ny = 31
+nx = 101
+ny = 101
 dx = 1e-06
 dy = 1e-06
 nghost = 3
@@ -12,7 +12,7 @@ y = "neumann0"
 
 [time]
 dt = 1e-05
-t_end = 0.002
+t_end = 0.3
 save_every = 1000000
 
 [run]
@@ -27,7 +27,7 @@ Gy = 0.0
 
 [init]
 mode = "single_center"
-theta_deg = 0
+theta_deg = 15
 random_theta = false
 N = 10
 edge = "north"
@@ -74,7 +74,7 @@ prob_per_cell = 0
 
 [viz.live]
 enabled = true
-stride = 1
+stride = 10
 fields = [
     "CS",
     "CL",
