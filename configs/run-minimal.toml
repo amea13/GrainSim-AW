@@ -14,7 +14,7 @@ y = "neumann0"
 
 [time]
 dt = 0.00001
-t_end = 0.08
+t_end = 0.01
 save_every = 1000000
 
 [run]
@@ -29,7 +29,7 @@ Gy = 0.0
 
 [init]
 mode = "single_center"
-theta_deg = 30
+theta_deg = 45
 random_theta = false
 N = 10
 edge = "north"
@@ -76,7 +76,7 @@ prob_per_cell = 0
 
 [viz.live]
 enabled = true
-stride = 500
+stride = 50
 fields = ["CS", "CL", "grain_id", "fs"]
 percentile = 99.0
 keep_open = true

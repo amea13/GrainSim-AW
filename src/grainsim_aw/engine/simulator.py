@@ -287,6 +287,10 @@ class Simulator:
                 if self.live and (step % self.live.stride == 0):
                     self.live.update(self.grid, t, step)
 
+                # 每隔100步打印日志
+                if step % 100 == 0:
+                    logger.info(f"Step {step}: Time {t:.4f}")
+
             # 循环结束后保存一次
             snapshot(self.grid, t, step, self.out)
             dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
