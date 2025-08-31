@@ -108,6 +108,10 @@ def _infect_ring_by_vertices(
         gid_a[ci, cj] = gid_a[i0, j0]
         th[ci, cj] = th[i0, j0]
 
+        # 继承形核中心（若字段存在）
+        grid.nuc_x[ci, cj] = grid.nuc_x[i0, j0]
+        grid.nuc_y[ci, cj] = grid.nuc_y[i0, j0]
+
         # 偏心中心：设为顶点绝对坐标
         xc, yc = _cell_center_abs(ci, cj, dx, dy, i0c, j0c)
         ecc_x[ci, cj] = xv - xc
@@ -233,6 +237,10 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]):
 
         theta0 = sample_theta()
 
+        # 父几何中心（绝对坐标）
+        i0c, j0c = _core_center_indices(grid)
+        xC0, yC0 = _cell_center_abs(i0, j0, dx, dy, i0c, j0c)
+
         # 1) 核心元：直接固相
         gid_a[i0, j0] = next_gid
         th[i0, j0] = theta0
@@ -240,6 +248,11 @@ def seed_initialize(grid, rng: np.random.Generator, cfg: Dict[str, Any]):
         ecc_x[i0, j0] = 0.0
         ecc_y[i0, j0] = 0.0
         Ldia[i0, j0] = _Ldia_max(theta0, dx)
+
+        # 形核中心：登记在核心元
+        if hasattr(grid, "nuc_x"):
+            grid.nuc_x[i0, j0] = xC0
+            grid.nuc_y[i0, j0] = yC0
 
         # —— 溶质初始化（核心）：CS = k0 * CL_old；CL = 0 —— #
         CL_old = CL[i0, j0]

@@ -18,6 +18,8 @@ class Grid:
     T: np.ndarray  # 温度场 [K]，float64（v0.2起持久字段）
     ecc_x: np.ndarray  # 偏心正方形中心相对本元胞几何中心的 x 偏移 [m]
     ecc_y: np.ndarray  # 同上 y 偏移 [m]
+    nuc_x: np.ndarray
+    nuc_y: np.ndarray
 
     # —— 网格几何 ——
     ny: int
@@ -74,6 +76,8 @@ def create_grid(domain_cfg: dict) -> Grid:
     T = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)  # 温度场
     ecc_x = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
     ecc_y = _alloc(ny, nx, g, dtype=np.float64, fill=0.0)
+    nuc_x = _alloc(ny, nx, g, dtype=np.float64, fill=np.nan)
+    nuc_y = _alloc(ny, nx, g, dtype=np.float64, fill=np.nan)
 
     return Grid(
         fs=fs,
@@ -92,6 +96,8 @@ def create_grid(domain_cfg: dict) -> Grid:
         nghost=g,
         tau_liq=tau_liq,
         tau_sol=tau_sol,
+        nuc_x=nuc_x,
+        nuc_y=nuc_y,
     )
 
 
@@ -114,7 +120,17 @@ def update_ghosts(grid: Grid, bc: Union[str, Mapping[str, str]] = "neumann0") ->
         bcy = bc.get("y", "neumann0")
 
     # 需要处理的字段（若有不希望周期的字段，可在此排除或分开处理）
-    fields = (grid.fs, grid.CL, grid.CS, grid.grain_id, grid.theta, grid.L_dia, grid.T)
+    fields = (
+        grid.fs,
+        grid.CL,
+        grid.CS,
+        grid.grain_id,
+        grid.theta,
+        grid.L_dia,
+        grid.T,
+        grid.nuc_x,
+        grid.nuc_y,
+    )
 
     for arr in fields:
         # 垂直方向（y）

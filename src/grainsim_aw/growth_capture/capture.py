@@ -101,7 +101,7 @@ def compute_verts(grid, masks: Dict[str, np.ndarray]) -> Verts:
     xC = ((J - j0) + 0.5) * dx + ecc_x
     yC = ((I - i0) + 0.5) * dy + ecc_y
 
-    # 四个顶点方向：theta + pi/4 + k*(pi/2)
+    # 四个顶点方向：theta + k*(pi/2)
     base = theta
     for k in range(4):
         ang = base + k * (np.pi / 2.0)
@@ -129,7 +129,7 @@ class _Candidate:
     gid: int
     theta: float
     margin: float
-    df_parent: float
+    d2_nuc: float
 
 
 def _in_core(i: int, j: int, g: int, Ny: int, Nx: int) -> bool:
@@ -184,9 +184,6 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
     def _cell_center_abs_vec(i: int, j: int) -> Tuple[float, float]:
         return _cell_center_abs(i, j, dx, dy, i0, j0)
 
-    # delta_fs：平局破用；当前步尚未推进，取 0 即可
-    delta_fs = np.zeros_like(fs)
-
     candidates_by_child: Dict[Tuple[int, int], List[_Candidate]] = {}
     parents = np.argwhere(mask_int)
     for i, j in parents:
@@ -196,7 +193,9 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
 
         gid_p = int(gid[i, j])
         theta_p = float(theta[i, j])
-        df_p = float(delta_fs[i, j])
+
+        xn = float(grid.nuc_x[i, j])
+        yn = float(grid.nuc_y[i, j])
 
         for k in range(4):
             xv = float(px[i, j, k])
@@ -223,6 +222,11 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
             if margin <= 0.0:
                 continue
 
+            # 距离形核中心（平方距离；避免开方）
+            dxn = xC - xn
+            dyn = yC - yn
+            d2 = dxn * dxn + dyn * dyn
+
             key = (ci, cj)
             cand = _Candidate(
                 parent_i=i,
@@ -235,7 +239,7 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
                 gid=gid_p,
                 theta=theta_p,
                 margin=margin,
-                df_parent=df_p,
+                d2_nuc=d2,  # 新增
             )
             lst = candidates_by_child.get(key)
             if lst is None:
@@ -246,11 +250,10 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
     if not candidates_by_child:
         return
 
-    eps = 1e-12
     for (ci, cj), lst in candidates_by_child.items():
         if not lst:
             continue
-        lst.sort(key=lambda c: (c.margin, c.df_parent, -c.gid), reverse=True)
+        lst.sort(key=lambda c: c.d2_nuc, reverse=True)
         w = lst[0]
 
         if not bool(mask_liq[w.child_i, w.child_j]):
@@ -259,7 +262,9 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
         # 继承 grain_id / theta
         gid[w.child_i, w.child_j] = w.gid
         theta[w.child_i, w.child_j] = w.theta
-        # Cs[w.child_i, w.child_j] = float(Cs[w.parent_i, w.parent_j])
+
+        grid.nuc_x[w.child_i, w.child_j] = grid.nuc_x[w.parent_i, w.parent_j]
+        grid.nuc_y[w.child_i, w.child_j] = grid.nuc_y[w.parent_i, w.parent_j]
 
         # 父/子中心与胜出顶点
         ci, cj = w.child_i, w.child_j
@@ -281,7 +286,7 @@ def geometry_and_capture(grid, cfg: Dict[str, Any], masks) -> None:
         den = max(abs(np.cos(th_sel)), abs(np.sin(th_sel)), 1e-12)
         Lmax = dx / den
         r = float(np.clip(s_fwd / Lmax, 0.0, 1.0))
-        fs_floor = float(cfg.get("capture_seed_fs_min", 0.001))
+        fs_floor = float(cfg.get("capture_seed_fs_min", 0.00000001))
         fs_seed = max(r, fs_floor)
 
         # 先继承角度再写 geometry

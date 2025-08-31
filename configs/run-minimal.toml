@@ -1,8 +1,8 @@
 # GrainSim-AW configuration (TOML)
 
 [domain]
-nx = 101
-ny = 101
+nx = 151
+ny = 151
 dx = 1e-6
 dy = 1e-6
 nghost = 3
@@ -14,7 +14,7 @@ y = "neumann0"
 
 [time]
 dt = 0.00001
-t_end = 0.01
+t_end = 0.1
 save_every = 1000000
 
 [run]
@@ -50,7 +50,7 @@ N_theta = 48
 
 [physics.mdcs]
 gf_over_ln = 1.0
-capture_seed_fs = 0.001
+capture_seed_fs = 0.00000001
 neighbors = 4
 
 [physics.solute]
@@ -76,7 +76,7 @@ prob_per_cell = 0
 
 [viz.live]
 enabled = true
-stride = 50
+stride = 500
 fields = ["CS", "CL", "grain_id", "fs"]
 percentile = 99.0
 keep_open = true
