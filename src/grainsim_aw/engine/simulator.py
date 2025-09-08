@@ -80,7 +80,7 @@ from ..multiphysics.process import TransportProcess
 from ..viz.liveplot import LivePlotter
 from ..io.writer import prepare_out, write_meta, snapshot
 
-from ..io.csv_matrix import dump_matrix
+from ..io.csv_matrix import dump_grids_to_csv
 
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ class Simulator:
 
         # 3) 可选：手动初始形核
         self.nuc = NucleationProcess()
-        if "init" in cfg and cfg["init"]:  # 仅当用户真的提供了 init 段
+        if "init" in cfg and cfg["init"]:  # 仅当用户提供了 init 字段
             init_cfg = dict(cfg["init"])
             init_cfg.setdefault(
                 "k0",
@@ -196,16 +196,15 @@ class Simulator:
                     self.grid, self.rng, self.cfg.get("nucleation", {}), masks
                 )
 
-                # dump_matrix(self.grid.CS, f"debug/CS{step:06d}.csv")
-                # dump_matrix(self.grid.CL, f"debug/CL{step:06d}.csv")
-                # dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
-                # dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
-
                 # 3-8) ESVC 几何与捕捉
                 self.gro.geometry_and_capture(
-                    self.grid, self.cfg.get("physics", {}).get("mdcs", {}), masks
+                    self.grid,
+                    fields,
+                    self.cfg.get("physics", {}).get("mdcs", {}),
+                    masks,
                 )
 
+                # 捕捉完后再更新 避免漏捕捉
                 fields.reset(masks["intf"])
                 masks = classify_phases(self.grid)
 
@@ -225,10 +224,6 @@ class Simulator:
                     masks,
                 )
 
-                # dump_matrix(fields.kappa, f"debug/Kappa{step:06d}.csv")
-                # dump_matrix(fields.nx, f"debug/Nx{step:06d}.csv")
-                # dump_matrix(fields.ny, f"debug/Ny{step:06d}.csv")
-
                 # 3-5) 界面平衡固、液相浓度
                 self.itf.equilibrium(
                     self.grid,
@@ -237,10 +232,6 @@ class Simulator:
                     fields,
                     masks,
                 )
-                if False:
-                    dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
-
-                # dump_matrix(fields.cls, f"debug/Cls{step:06d}.csv")
 
                 # 3-6) 界面法向生长速率
                 self.itf.velocity(
@@ -276,26 +267,27 @@ class Simulator:
                     t,
                 )
 
-                # 评估下一步 dt
-                # dt = compute_next_dt(self.grid, fields)
-
                 # 3-11) 保存快照
                 if step % save_every == 0:
                     snapshot(self.grid, t, step, self.out)
 
                 # 3-12) 刷新可视化
                 if self.live and (step % self.live.stride == 0):
+                    # if self.live and (step >= 1100):
                     self.live.update(self.grid, t, step)
+
+                # if step >= 1000:
+                #    dump_grids_to_csv(self.grid, fields, f"./out/snap{step:06d}.csv")
 
                 # 每隔100步打印日志
                 if step % 100 == 0:
                     logger.info(f"Step {step}: Time {t:.4f}")
 
+                # 自适应时间步（可选）
+                dt = compute_next_dt(self.grid, fields)
+
             # 循环结束后保存一次
             snapshot(self.grid, t, step, self.out)
-            dump_matrix(self.grid.fs, f"debug/fs{step:06d}.csv")
-            dump_matrix(self.grid.L_dia, f"debug/L_dia{step:06d}.csv")
-            dump_matrix(fields.vn, f"debug/Vn{step:06d}.csv")
 
         except Exception:
             logger.exception("运行异常，保存事故快照以便排查")
