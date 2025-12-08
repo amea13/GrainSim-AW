@@ -37,5 +37,5 @@ def compute_next_dt(grid, fields) -> float:
     t_dl = np.inf if DLmax == 0.0 else ((ell * ell) / DLmax)
     t_ds = np.inf if DSmax == 0.0 else ((ell * ell) / DSmax)
 
-    # 安全系数固定为 0.25，与 C++ 对齐
-    return 0.25 * min(t_vel, t_dl, t_ds)
+    # 安全系数固定为 0.2，与 C对齐
+    return 0.2 * min(t_vel, t_dl, t_ds)

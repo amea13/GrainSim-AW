@@ -8,11 +8,11 @@ from .velocity import compute_velocity
 
 class InterfaceProcess:
 
-    def curvature(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
-        compute_curvature(grid, masks, cfg, out=fields.kappa)
-
     def normal(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
         compute_normal(grid, masks, cfg, out_nx=fields.nx, out_ny=fields.ny)
+
+    def curvature(self, grid, cfg: Dict[str, Any], fields: Fields, masks) -> None:
+        compute_curvature(grid, fields, masks, cfg, out=fields.kappa)
 
     def equilibrium(
         self,
@@ -27,6 +27,7 @@ class InterfaceProcess:
             masks,
             cfg,
             domain_cfg,
+            fields,
             normal=(fields.nx, fields.ny),
             kappa=fields.kappa,
             out_cls=fields.cls,

@@ -1,8 +1,14 @@
 # GrainSim-AW configuration (TOML)
+[viz.live]
+enabled = true
+stride = 500
+fields = ["CS", "CL", "grain_id", "fs"]
+percentile = 99.0
+keep_open = true
 
 [domain]
-nx = 151
-ny = 151
+nx = 301
+ny = 301
 dx = 1e-6
 dy = 1e-6
 nghost = 3
@@ -14,7 +20,7 @@ y = "neumann0"
 
 [time]
 dt = 0.00001
-t_end = 0.1
+t_end = 0.300
 save_every = 1000000
 
 [run]
@@ -29,13 +35,13 @@ Gy = 0.0
 
 [init]
 mode = "single_center"
-theta_deg = 45
+theta_deg = 20
 random_theta = false
 N = 10
 edge = "north"
 count = 8
 eps_over_edge = 0.02
-capture_seed_fs = 0.005
+capture_seed_fs = 0.01
 
 [physics.interface]
 TL_eq = 1809.15
@@ -49,8 +55,7 @@ fold = 4
 N_theta = 48
 
 [physics.mdcs]
-gf_over_ln = 1.0
-capture_seed_fs = 0.00000001
+capture_seed_fs = 0.01
 neighbors = 4
 
 [physics.solute]
@@ -59,7 +64,7 @@ eps = 1e-12
 
 [physics.solute.solver]
 max_iter = 200
-tol = 1e-8
+tol = 1e-10
 
 [physics.solute.clip]
 min = 0.0
@@ -73,13 +78,6 @@ dTn = 15.0
 dT_sigma = 1.5
 nmax = 2.224e6
 prob_per_cell = 0
-
-[viz.live]
-enabled = true
-stride = 500
-fields = ["CS", "CL", "grain_id", "fs"]
-percentile = 99.0
-keep_open = true
 
 [viz.live.ranges]
 fs = [0.0, 1.0]

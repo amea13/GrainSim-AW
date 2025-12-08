@@ -2,28 +2,35 @@ from __future__ import annotations
 from typing import Dict, Tuple, Optional
 import numpy as np
 
-from .geometry import compute_normal, compute_curvature
-
 
 def anisotropy_factor(
-    nx: np.ndarray, ny: np.ndarray, theta: np.ndarray, eps: float, m: int = 4
+    nx: np.ndarray,
+    ny: np.ndarray,
+    theta: np.ndarray,
+    eps_anis: float,
+    *,
+    masks: Optional[Dict[str, np.ndarray]] = None,
 ) -> np.ndarray:
-    """
-    f(φ,θ) = 1 - (m^2-1) * eps * cos[m*(φ-θ)], 其中
-      φ = atan2(ny, nx) ∈ (−π, π]
-      θ = 晶粒取向角
-    差角 δ 规约到 (−π/m, π/m]，避免周期与分支不连续带来的数值噪声。
-    """
-    if eps == 0.0:
-        return np.ones_like(nx, dtype=float)
+    f = np.ones_like(nx, dtype=float)
+    if eps_anis == 0.0:
+        return f
 
-    phi = np.arctan2(ny, nx)  # (−π, π]
+    mask = None
+    if masks is not None and "intf" in masks:
+        mask = masks["intf"].astype(bool, copy=False)
 
-    # 差角规约到最小等效区间 (−π/m, π/m]
-    period = 2.0 * np.pi / m  # 对 m=4，period=π/2
-    delta = (phi - theta + period / 2) % period - period / 2
+    if mask is None:
+        mask = np.ones_like(nx, dtype=bool)
 
-    return 1.0 - (m * m - 1) * float(eps) * np.cos(m * delta)
+    # 只在界面上取法向角 φ
+    phi = np.arctan2(ny[mask], nx[mask])  # ∈ (-π, π]
+    delta = phi - theta[mask]  # 弧度差
+    # 可选的规范化，保证数值稳定，但不改变 cos 的值
+    delta = (delta + np.pi) % (2.0 * np.pi) - np.pi
+
+    f_intf = 1.0 - 15.0 * float(eps_anis) * np.cos(4.0 * delta)
+    f[mask] = f_intf
+    return f
 
 
 def compute_equilibrium(
@@ -31,6 +38,7 @@ def compute_equilibrium(
     masks: Dict[str, np.ndarray],
     cfg: Dict,
     domain_cfg: Dict,
+    fields,
     normal: Tuple[np.ndarray, np.ndarray],
     kappa: np.ndarray,
     out_cls: np.ndarray | None = None,
@@ -53,17 +61,18 @@ def compute_equilibrium(
 
     # 物性/模型参数（如未提供，给出温和默认）
     TL_eq = float(cfg.get("TL_eq", 1809.15))
-    C0 = float(domain_cfg.get("C0", 0.0))  # 初始浓度
+    C0 = float(domain_cfg.get("C0", 0.0082))  # 初始浓度
     mL = float(cfg.get("mL", -7800.0))  # 不能为 0
     Gamma = float(cfg.get("Gamma", 1.9e-7))
     k0 = float(cfg.get("k0", 0.34))
-    eps = float(cfg.get("eps_anis", 0.04))
-
+    eps_anis = float(cfg.get("eps_anis", 0.04))
     # 法向/曲率：若未传入，则内部计算一次（便于独立使用）
     nx, ny = normal
 
     # 各向异性因子
-    ani = anisotropy_factor(nx, ny, theta, eps)
+    ani = anisotropy_factor(nx, ny, theta, eps_anis, masks=masks)
+
+    fields.ani[...] = ani  # 记录各向异性因子，便于诊断
 
     # 反解 C_L^* / C_S^*
     num = (T - TL_eq) + Gamma * kappa * ani

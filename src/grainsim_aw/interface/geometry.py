@@ -12,17 +12,17 @@ __all__ = ["compute_curvature", "compute_normal"]
 # =========================
 def compute_curvature(
     grid,
+    fields,
     masks: Dict[str, np.ndarray],
     cfg: Dict[str, Any],
     out: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """
-    用中心差分计算 level-set 形式的曲率 κ。
-    仅对界面带写入，其他位置保持 out 原值或置零。
-    """
+
     fs = grid.fs
     dx = float(grid.dx)
     dy = float(grid.dy)
+    nx = fields.nx
+    ny = fields.ny
 
     intf: np.ndarray = masks["intf"]
     if intf is None:
@@ -60,6 +60,71 @@ def compute_curvature(
     if out is None:
         out = np.zeros_like(fs, dtype=float)
     out[write_mask] = kappa_full[write_mask]
+    return out
+
+
+def compute_curvature1(
+    grid,
+    fields,
+    masks: Dict[str, np.ndarray],
+    cfg: Dict[str, Any],
+    out: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    dx = float(grid.dx)
+    dy = float(grid.dy)
+    nx = np.asarray(fields.nx, dtype=float)
+    ny = np.asarray(fields.ny, dtype=float)
+
+    intf = masks["intf"].astype(bool)
+    ys, xs = grid.core
+    core_mask = np.zeros_like(intf, dtype=bool)
+    core_mask[ys, xs] = True
+    write_mask = intf & core_mask
+
+    roll = np.roll
+
+    # 可选：对法向做轻微平滑后再归一化，抑制噪声（只影响几何，不改守恒）
+    if bool(cfg.get("curv_smooth_normals", True)):
+
+        def box9(a):
+            return (
+                a
+                + roll(a, 1, 0)
+                + roll(a, -1, 0)
+                + roll(a, 1, 1)
+                + roll(a, -1, 1)
+                + roll(roll(a, 1, 0), 1, 1)
+                + roll(roll(a, 1, 0), -1, 1)
+                + roll(roll(a, -1, 0), 1, 1)
+                + roll(roll(a, -1, 0), -1, 1)
+            ) / 9.0
+
+        nx = box9(nx)
+        ny = box9(ny)
+
+    # 重新单位化，防止累计误差；纯相处设为 0（不写入也无所谓）
+    g = np.sqrt(nx * nx + ny * ny)
+    eps = 1e-12
+    nz = g > eps
+    nx = np.where(nz, nx / g, 0.0)
+    ny = np.where(nz, ny / g, 0.0)
+
+    # 散度（中心差分）
+    dnx_dx = (roll(nx, -1, 1) - roll(nx, 1, 1)) / (2.0 * dx)
+    dny_dy = (roll(ny, -1, 0) - roll(ny, 1, 0)) / (2.0 * dy)
+    kappa_full = dnx_dx + dny_dy
+
+    if out is None:
+        out = np.zeros_like(nx, dtype=float)
+    out[write_mask] = kappa_full[write_mask]
+
+    # 可选：物理限幅（最小曲率半径 ~ c * min(dx,dy)）
+    Rmin_cells = float(cfg.get("curv_Rmin_cells", 2.5))
+    if Rmin_cells > 0:
+        Rmin = Rmin_cells * min(dx, dy)
+        kcap = 1.0 / max(Rmin, 1e-30)
+        np.clip(out, -kcap, kcap, out=out)
+
     return out
 
 

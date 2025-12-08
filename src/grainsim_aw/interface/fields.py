@@ -14,10 +14,12 @@ class IfaceFieldsBuf:
     cls: FloatArr
     css: FloatArr
     vn: FloatArr
+    delta_fs: FloatArr
     fs_dot: FloatArr
     vx: FloatArr
     vy: FloatArr
     ani: FloatArr
+    test: FloatArr  # 仅做测试用
 
     # —— 工厂 —— #
     @staticmethod
@@ -30,10 +32,12 @@ class IfaceFieldsBuf:
             cls=z(),
             css=z(),
             vn=z(),
+            delta_fs=z(),
             fs_dot=z(),
             vx=z(),
             vy=z(),
             ani=z(),
+            test=z(),
         )
 
     # —— 校验与维护 —— #
@@ -57,10 +61,12 @@ class IfaceFieldsBuf:
             self.cls,
             self.css,
             self.vn,
+            self.delta_fs,
             self.fs_dot,
             self.vx,
             self.vy,
             self.ani,
+            self.test,
         )
 
     def _named_arrays(self) -> Iterable[tuple[str, FloatArr]]:
@@ -71,10 +77,12 @@ class IfaceFieldsBuf:
             ("cls", self.cls),
             ("css", self.css),
             ("vn", self.vn),
+            ("delta_fs", self.delta_fs),
             ("fs_dot", self.fs_dot),
             ("vx", self.vx),
             ("vy", self.vy),
             ("ani", self.ani),
+            ("test", self.test),
         )
 
     # —— 清零 —— #

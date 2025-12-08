@@ -4,12 +4,14 @@ import numpy as np
 
 
 def L_n(nx: np.ndarray, ny: np.ndarray, dx: float, dy: float) -> np.ndarray:
-    """由法向分量计算“界面穿越长度” Ln（dx=dy 时等价于常用式）。"""
     eps = 1e-12
-    c = np.maximum(np.abs(nx), eps)
-    s = np.maximum(np.abs(ny), eps)
-    Ln_c_ge_s = dx * (1.0 / c + s - (s * s) / c)
-    Ln_s_gt_c = dy * (1.0 / s + c - (c * c) / s)
+    nmag = np.maximum(np.hypot(nx, ny), eps)
+    c = np.abs(nx) / nmag  # |cos φ|
+    s = np.abs(ny) / nmag  # |sin φ|
+
+    # 4.9 分段式
+    Ln_c_ge_s = dx * (1.0 / np.maximum(c, eps) + s - (s * s) / np.maximum(c, eps))
+    Ln_s_gt_c = dy * (1.0 / np.maximum(s, eps) + c - (c * c) / np.maximum(s, eps))
     return np.where(c >= s, Ln_c_ge_s, Ln_s_gt_c)
 
 
@@ -108,23 +110,12 @@ def advance_interface(
     df_int = num / den
     np.minimum(df_int, 1.0 - fs[mask_int], out=df_int)
     delta_fs[mask_int] = df_int
+    fields.delta_fs[...] = delta_fs
 
-    # 4) 原地更新 fs；界面满固后令 CL=0
-    fs_prev = fs.copy()
-    CL_prev = CL.copy()
-    CS_prev = CS.copy()
-    fs += delta_fs
-
-    CL[mask_int] = np.where(fs[mask_int] == 1.0, 0.0, CL[mask_int])
-    CS[mask_int] = (
-        CS_prev[mask_int] * fs_prev[mask_int]
-        + k0 * CL_prev[mask_int] * delta_fs[mask_int]
-    ) / (fs_prev[mask_int] + delta_fs[mask_int])
-
-    # 5) 更新 ESVC 半对角线
+    # 4)  更新 ESVC 半对角线
     update_Ldia(grid, delta_fs, grid.theta)
 
-    # 6) 输出给溶质源项
+    # 5) 输出给溶质源项
     fs_dot = delta_fs / dt
     fields.fs_dot[...] = fs_dot
     return fs_dot
